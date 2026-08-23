@@ -78,6 +78,7 @@ async function handleSetup(request, env) {
 async function handleUpdate(update, env) {
   const bot = tg(env.BOT_TOKEN);
 
+  console.log('UPDATE:', JSON.stringify(update));
   if (update.message) {
     const chatType = update.message.chat.type;
     // پیام از گروه/سوپرگروه → بررسی تبلیغ
