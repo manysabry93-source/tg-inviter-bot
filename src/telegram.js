@@ -33,7 +33,7 @@ export function tg(token) {
     exportChatInviteLink: (chat_id) => call('exportChatInviteLink', { chat_id }),
 
     setWebhook: (url, secret_token) =>
-      call('setWebhook', { url, secret_token, allowed_updates: ['message', 'callback_query'] }),
+    call('setWebhook', { url, secret_token, allowed_updates: ['message', 'callback_query', 'channel_post'] }),
 
     sendMessageWithButton: (chat_id, text, reply_to_message_id, botUsername) =>
       call('sendMessage', {
