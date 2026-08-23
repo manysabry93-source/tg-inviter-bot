@@ -34,6 +34,24 @@ export function tg(token) {
 
     setWebhook: (url, secret_token) =>
       call('setWebhook', { url, secret_token, allowed_updates: ['message', 'callback_query'] }),
+
+    sendMessageWithButton: (chat_id, text, reply_to_message_id, botUsername) =>
+      call('sendMessage', {
+        chat_id,
+        text,
+        reply_to_message_id,
+        reply_markup: {
+          inline_keyboard: [[
+            {
+              text: '📩 دریافت پیام ویژه',
+              url: `https://t.me/${botUsername}?start=hi`
+            }
+          ]]
+        }
+      }),
+
+    deleteMessage: (chat_id, message_id) =>
+      call('deleteMessage', { chat_id, message_id }),
   };
 }
 

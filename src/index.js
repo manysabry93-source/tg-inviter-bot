@@ -128,12 +128,34 @@ async function handleGroupMessage(msg, bot, env) {
   const adText = await db.getActiveAdMessage(env.DB);
   if (!adText) return;
 
-  // 7. ارسال پیام خصوصی
+  // 7. اول تو گروه ریپلای بفرست با دکمه استارت
+  try {
+    const firstName = user.first_name || 'دوست عزیز';
+    const replyRes = await bot.sendMessageWithButton(
+      groupId,
+      `👋 ${firstName}، یه پیام ویژه برات دارم!
+برای دریافت کلیک کن 👇`,
+      msg.message_id,
+      env.BOT_USERNAME
+    );
+    await db.logAdSent(env.DB, userId, groupId);
+
+    // بعد از 30 ثانیه پیام ریپلای رو حذف کن
+    const replyMsgId = replyRes?.result?.message_id;
+    if (replyMsgId) {
+      setTimeout(async () => {
+        try { await bot.deleteMessage(groupId, replyMsgId); } catch {}
+      }, 30000);
+    }
+  } catch {
+    // نادیده بگیر
+  }
+
+  // 8. اگه قبلاً استارت زده، پیام خصوصی بفرست
   try {
     await bot.sendMessage(userId, adText);
-    await db.logAdSent(env.DB, userId, groupId);
   } catch {
-    // کاربر ربات رو بلاک کرده یا استارت نزده — نادیده می‌گیریم
+    // استارت نزده — همون ریپلای کافیه
   }
 }
 
