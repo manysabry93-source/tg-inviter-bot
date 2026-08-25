@@ -96,71 +96,67 @@ async function handleUpdate(update, env) {
 // ─── Group Message Ad Listener ─────────────────────────────────────────────────
 
 async function handleGroupMessage(msg, bot, env) {
-  // 1. بررسی فعال بودن قابلیت تبلیغ
+  console.log('handleGroupMessage called');
+  
   const adActive = await db.getSetting(env.DB, 'ad_listener_active');
+  console.log('adActive:', adActive);
   if (adActive !== '1') return;
 
-   const groupId = String(msg.chat.id);
-  console.log('groupId:', groupId);
-  const isTargetGroup = await db.isAdGroup(env.DB, groupId);
-  console.log('groupId:', groupId, 'isTarget:', isTargetGroup);  console.log('isTargetGroup:', isTargetGroup, 'for groupId:', groupId);
   const user = msg.from;
-
-  // 2. بات‌ها رو رد کن
   if (!user || user.is_bot) return;
 
-  // 3. فقط گروه‌هایی که ادمین اضافه کرده
-
+  const groupId = String(msg.chat.id);
   const userId = user.id;
+  console.log('groupId:', groupId, 'userId:', userId);
 
-  // 4. اگه ادمین یا مدیر گروه هست پیام نده
+  const isTargetGroup = await db.isAdGroup(env.DB, groupId);
+  console.log('isTargetGroup:', isTargetGroup);
+  if (!isTargetGroup) return;
+
   try {
     const memberRes = await bot.getChatMember(groupId, userId);
     const status = memberRes?.result?.status;
+    console.log('member status:', status);
     if (status === 'administrator' || status === 'creator') return;
-  } catch {
-    // اگه چک نشد ادامه بده
+  } catch(e) {
+    console.log('getChatMember error:', e.message);
   }
 
-  // 5. کولداون 5 روزه (120 ساعت) — اگه قبلاً پیام گرفته، رد کن
   const alreadySent = await db.wasAdSentRecently(env.DB, userId, 120);
+  console.log('alreadySent:', alreadySent);
   if (alreadySent) return;
 
-  // 6. گرفتن متن تبلیغ
   const adText = await db.getActiveAdMessage(env.DB);
+  console.log('adText:', adText ? 'exists' : 'null');
   if (!adText) return;
 
-  // 7. اول تو گروه ریپلای بفرست با دکمه استارت
   try {
     const firstName = user.first_name || 'دوست عزیز';
     const replyRes = await bot.sendMessageWithButton(
       groupId,
-      `👋 ${firstName}، یه پیام ویژه برات دارم!
-برای دریافت کلیک کن 👇`,
+      `👋 ${firstName}، یه پیام ویژه برات دارم!\nبرای دریافت کلیک کن 👇`,
       msg.message_id,
       env.BOT_USERNAME
     );
     await db.logAdSent(env.DB, userId, groupId);
+    console.log('reply sent!');
 
-    // بعد از 30 ثانیه پیام ریپلای رو حذف کن
     const replyMsgId = replyRes?.result?.message_id;
     if (replyMsgId) {
       setTimeout(async () => {
         try { await bot.deleteMessage(groupId, replyMsgId); } catch {}
       }, 30000);
     }
-  } catch {
-    // نادیده بگیر
+  } catch(e) {
+    console.log('sendMessage error:', e.message);
   }
 
-  // 8. اگه قبلاً استارت زده، پیام خصوصی بفرست
   try {
     await bot.sendMessage(userId, adText);
-  } catch {
-    // استارت نزده — همون ریپلای کافیه
+  } catch(e) {
+    console.log('sendDM error:', e.message);
   }
 }
-
 // ─── Message Handler ───────────────────────────────────────────────────────────
 
 async function handleMessage(msg, bot, env) {
