@@ -103,7 +103,7 @@ async function handleGroupMessage(msg, bot, env) {
    const groupId = String(msg.chat.id);
   console.log('groupId:', groupId);
   const isTargetGroup = await db.isAdGroup(env.DB, groupId);
-  console.log('isTargetGroup:', isTargetGroup, 'for groupId:', groupId);
+  console.log('groupId:', groupId, 'isTarget:', isTargetGroup);  console.log('isTargetGroup:', isTargetGroup, 'for groupId:', groupId);
   const user = msg.from;
 
   // 2. بات‌ها رو رد کن
