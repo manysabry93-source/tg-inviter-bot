@@ -110,8 +110,6 @@ async function handleGroupMessage(msg, bot, env) {
   if (!user || user.is_bot) return;
 
   // 3. فقط گروه‌هایی که ادمین اضافه کرده
-  const isTargetGroup = await db.isAdGroup(env.DB, groupId);
-  if (!isTargetGroup) return;
 
   const userId = user.id;
 
