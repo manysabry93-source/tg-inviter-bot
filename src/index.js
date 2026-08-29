@@ -1,91 +1,56 @@
 /**
- * 🤖 Telegram Inviter Bot — Cloudflare Worker
- * ربات دعوت‌گر تلگرام روی Cloudflare Workers + D1
+ * Telegram Inviter Bot — Cloudflare Worker
+ * نسخه کامل با Join Request + تبلیغ گروه + پنل ادمین
  */
 
 import { tg, inlineKb, backBtn, mainMenuKb } from './telegram.js';
 import * as db from './db.js';
 
-// ─── State management (در KV ذخیره می‌شه) ─────────────────────────────────────
-// چون Workers stateless هستن، وضعیت مکالمه رو در حافظه session ذخیره می‌کنیم
 const SESSION = new Map();
+function getSession(userId) { return SESSION.get(userId) || {}; }
+function setSession(userId, data) { SESSION.set(userId, { ...getSession(userId), ...data }); }
+function clearSession(userId) { SESSION.delete(userId); }
 
-function getSession(userId) {
-  return SESSION.get(userId) || {};
-}
-function setSession(userId, data) {
-  SESSION.set(userId, { ...getSession(userId), ...data });
-}
-function clearSession(userId) {
-  SESSION.delete(userId);
-}
-
-// ─── Main Worker Handler ───────────────────────────────────────────────────────
+// ─── Main Worker ──────────────────────────────────────────────────────────────
 
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
-
-    // تنظیم Webhook (فقط یه بار)
-    if (url.pathname === '/setup') {
-      return handleSetup(request, env);
-    }
-
-    // Webhook از تلگرام
+    if (url.pathname === '/setup') return handleSetup(request, env);
     if (url.pathname === `/webhook/${env.BOT_SECRET}`) {
       if (request.method !== 'POST') return new Response('OK');
       try {
         const update = await request.json();
         await handleUpdate(update, env);
-      } catch (e) {
-        console.error('Update error:', e);
-      }
+      } catch (e) { console.error('Error:', e); }
       return new Response('OK');
     }
-
-    return new Response('🤖 Bot is running!');
+    return new Response('Bot is running!');
   },
 };
 
-// ─── Setup Webhook ─────────────────────────────────────────────────────────────
+// ─── Setup ────────────────────────────────────────────────────────────────────
 
 async function handleSetup(request, env) {
   const bot = tg(env.BOT_TOKEN);
-  const workerUrl = env.WORKER_URL;
-  const webhookUrl = `${workerUrl}/webhook/${env.BOT_SECRET}`;
-
-  const debugInfo = {
-    workerUrl: workerUrl || 'NOT SET',
-    botSecret: env.BOT_SECRET ? env.BOT_SECRET.substring(0, 4) + '...' : 'NOT SET',
-    botToken: env.BOT_TOKEN ? env.BOT_TOKEN.substring(0, 10) + '...' : 'NOT SET',
-    webhookUrl: webhookUrl,
-  };
-
-  let result;
-  try {
-    result = await bot.setWebhook(webhookUrl, env.BOT_SECRET);
-  } catch(e) {
-    result = { error: e.message };
-  }
-
-  return new Response(JSON.stringify({ debug: debugInfo, result }, null, 2), {
+  const webhookUrl = `${env.WORKER_URL}/webhook/${env.BOT_SECRET}`;
+  const result = await bot.setWebhook(webhookUrl, env.BOT_SECRET);
+  return new Response(JSON.stringify({ webhookUrl, result }, null, 2), {
     headers: { 'Content-Type': 'application/json' },
   });
 }
 
-// ─── Update Router ─────────────────────────────────────────────────────────────
+// ─── Update Router ────────────────────────────────────────────────────────────
 
 async function handleUpdate(update, env) {
   const bot = tg(env.BOT_TOKEN);
-
-  console.log('UPDATE:', JSON.stringify(update));
-  if (update.message) {
+  if (update.chat_join_request) {
+    await handleJoinRequest(update.chat_join_request, bot, env);
+  } else if (update.message) {
     const chatType = update.message.chat.type;
-    // پیام از گروه/سوپرگروه → بررسی تبلیغ
     if (chatType === 'group' || chatType === 'supergroup') {
       await handleGroupMessage(update.message, bot, env);
     } else {
-      // پیام خصوصی → پنل ادمین
       await handleMessage(update.message, bot, env);
     }
   } else if (update.callback_query) {
@@ -93,13 +58,41 @@ async function handleUpdate(update, env) {
   }
 }
 
-// ─── Group Message Ad Listener ─────────────────────────────────────────────────
+// ─── Join Request Handler ─────────────────────────────────────────────────────
+
+async function handleJoinRequest(jr, bot, env) {
+  const active = await db.getSetting(env.DB, 'join_request_active');
+  if (active !== '1') {
+    await bot.approveChatJoinRequest(jr.chat.id, jr.from.id);
+    return;
+  }
+  const userId = jr.from.id;
+  const channelId = String(jr.chat.id);
+  const firstName = jr.from.first_name || 'کاربر';
+  const targetBot = env.BOT_USERNAME;
+
+  await db.logJoinRequest(env.DB, userId, jr.from.username, firstName, channelId);
+
+  const joinMsg = await db.getSetting(env.DB, 'join_request_message');
+  const msgText = joinMsg || 'برای عضویت در کانال ابتدا ربات ما را استارت کنید 👇';
+
+  try {
+    await bot.sendMessage(userId, `👋 ${firstName} عزیز!\n\n${msgText}`, {
+      reply_markup: {
+        inline_keyboard: [[
+          { text: '🤖 استارت ربات', url: `https://t.me/${targetBot}?start=join_${channelId}` }
+        ]]
+      }
+    });
+  } catch {
+    await bot.approveChatJoinRequest(jr.chat.id, userId);
+  }
+}
+
+// ─── Group Message Handler ────────────────────────────────────────────────────
 
 async function handleGroupMessage(msg, bot, env) {
-  console.log('handleGroupMessage called');
-  
   const adActive = await db.getSetting(env.DB, 'ad_listener_active');
-  console.log('adActive:', adActive);
   if (adActive !== '1') return;
 
   const user = msg.from;
@@ -107,57 +100,49 @@ async function handleGroupMessage(msg, bot, env) {
 
   const groupId = String(msg.chat.id);
   const userId = user.id;
-  console.log('groupId:', groupId, 'userId:', userId);
 
   const isTargetGroup = await db.isAdGroup(env.DB, groupId);
-  console.log('isTargetGroup:', isTargetGroup);
   if (!isTargetGroup) return;
 
   try {
     const memberRes = await bot.getChatMember(groupId, userId);
     const status = memberRes?.result?.status;
-    console.log('member status:', status);
     if (status === 'administrator' || status === 'creator') return;
-  } catch(e) {
-    console.log('getChatMember error:', e.message);
-  }
+  } catch {}
 
   const alreadySent = await db.wasAdSentRecently(env.DB, userId, 120);
-  console.log('alreadySent:', alreadySent);
   if (alreadySent) return;
 
   const adText = await db.getActiveAdMessage(env.DB);
-  console.log('adText:', adText ? 'exists' : 'null');
   if (!adText) return;
 
+  const deleteAfter = parseInt(await db.getSetting(env.DB, 'ad_delete_after') || '30') * 1000;
+  const buttonType = await db.getSetting(env.DB, 'ad_button_type') || 'button';
+  const targetBot = await db.getSetting(env.DB, 'ad_target_bot') || env.BOT_USERNAME;
+  const firstName = user.first_name || 'دوست عزیز';
+
   try {
-    const firstName = user.first_name || 'دوست عزیز';
-    const replyRes = await bot.sendMessageWithButton(
-      groupId,
-      `👋 ${firstName}، یه پیام ویژه برات دارم!\nبرای دریافت کلیک کن 👇`,
-      msg.message_id,
-      env.BOT_USERNAME
-    );
+    let replyRes;
+    if (buttonType === 'button') {
+      replyRes = await bot.sendMessageWithButton(groupId, `👋 ${firstName}، یه پیام ویژه برات دارم!\nبرای دریافت کلیک کن 👇`, msg.message_id, targetBot);
+    } else {
+      replyRes = await bot.sendMessageWithMention(groupId, `👋 ${firstName}، یه پیام ویژه برات دارم!`, msg.message_id, targetBot);
+    }
+
     await db.logAdSent(env.DB, userId, groupId);
-    console.log('reply sent!');
 
     const replyMsgId = replyRes?.result?.message_id;
     if (replyMsgId) {
       setTimeout(async () => {
         try { await bot.deleteMessage(groupId, replyMsgId); } catch {}
-      }, 30000);
+      }, deleteAfter);
     }
-  } catch(e) {
-    console.log('sendMessage error:', e.message);
-  }
+  } catch {}
 
-  try {
-    await bot.sendMessage(userId, adText);
-  } catch(e) {
-    console.log('sendDM error:', e.message);
-  }
+  try { await bot.sendMessage(userId, adText); } catch {}
 }
-// ─── Message Handler ───────────────────────────────────────────────────────────
+
+// ─── Private Message Handler ──────────────────────────────────────────────────
 
 async function handleMessage(msg, bot, env) {
   const userId = msg.from.id;
@@ -168,15 +153,41 @@ async function handleMessage(msg, bot, env) {
   const isSuper = await db.isSuperAdmin(env.DB, userId);
 
   // /start
-  if (text === '/start') {
-    if (!isAdm && !isSuper) {
-      await bot.sendMessage(chatId, '⛔ شما دسترسی ادمین ندارید.');
+  if (text.startsWith('/start')) {
+    const param = text.split(' ')[1] || '';
+
+    // اگه از طریق Join Request اومده
+    if (param.startsWith('join_')) {
+      const channelId = param.replace('join_', '');
+      const adText = await db.getActiveAdMessage(env.DB);
+
+      if (adText) {
+        await bot.sendMessage(chatId, adText);
+      }
+
+      const pending = await db.getPendingJoinRequest(env.DB, userId);
+      if (pending) {
+        await bot.approveChatJoinRequest(channelId, userId);
+        await db.markJoinApproved(env.DB, userId, channelId);
+        await bot.sendMessage(chatId, '✅ درخواست عضویت شما تأیید شد! اکنون عضو کانال هستید.');
+      }
       return;
     }
+
+    // استارت معمولی — اگه ادمین نیست پیام تبلیغ بده
+    if (!isAdm && !isSuper) {
+      const adText = await db.getActiveAdMessage(env.DB);
+      if (adText) {
+        await bot.sendMessage(chatId, adText);
+      } else {
+        await bot.sendMessage(chatId, '👋 سلام! به ربات خوش آمدید.');
+      }
+      return;
+    }
+
     clearSession(userId);
-    await bot.sendMessage(
-      chatId,
-      `👋 سلام <b>${msg.from.first_name}</b>!\n\n🤖 <b>پنل مدیریت ربات دعوت‌گر</b>\n━━━━━━━━━━━━━━━━━━━━\nاز منوی زیر گزینه مورد نظر را انتخاب کنید:`,
+    await bot.sendMessage(chatId,
+      `👋 سلام <b>${msg.from.first_name}</b>!\n\n🤖 <b>پنل مدیریت ربات</b>\n━━━━━━━━━━━━━━━━━━━━\nاز منوی زیر گزینه مورد نظر را انتخاب کنید:`,
       { reply_markup: mainMenuKb(isSuper) }
     );
     return;
@@ -184,31 +195,23 @@ async function handleMessage(msg, bot, env) {
 
   if (!isAdm && !isSuper) return;
 
-  // بررسی session برای دریافت ورودی
   const session = getSession(userId);
-
-  if (session.waiting === 'source_link') {
-    await receiveSourceLink(msg, bot, env, session);
-  } else if (session.waiting === 'target_link') {
-    await receiveTargetLink(msg, bot, env, session);
-  } else if (session.waiting === 'invite_msg') {
-    await receiveInviteMsg(msg, bot, env);
-  } else if (session.waiting === 'admin_id_add') {
-    await receiveAdminAdd(msg, bot, env);
-  } else if (session.waiting === 'admin_id_remove') {
-    await receiveAdminRemove(msg, bot, env);
-  } else if (session.waiting === 'set_delay') {
-    await receiveDelaySetting(msg, bot, env);
-  } else if (session.waiting === 'set_max_daily') {
-    await receiveMaxDailySetting(msg, bot, env);
-  } else if (session.waiting === 'ad_group_link') {
-    await receiveAdGroupLink(msg, bot, env);
-  } else if (session.waiting === 'ad_message_text') {
-    await receiveAdMessageText(msg, bot, env);
-  }
+  if (session.waiting === 'source_link') await receiveSourceLink(msg, bot, env);
+  else if (session.waiting === 'target_link') await receiveTargetLink(msg, bot, env);
+  else if (session.waiting === 'invite_msg') await receiveInviteMsg(msg, bot, env);
+  else if (session.waiting === 'admin_id_add') await receiveAdminAdd(msg, bot, env);
+  else if (session.waiting === 'admin_id_remove') await receiveAdminRemove(msg, bot, env);
+  else if (session.waiting === 'set_delay') await receiveDelaySetting(msg, bot, env);
+  else if (session.waiting === 'set_max_daily') await receiveMaxDailySetting(msg, bot, env);
+  else if (session.waiting === 'ad_group_link') await receiveAdGroupLink(msg, bot, env);
+  else if (session.waiting === 'ad_message_text') await receiveAdMessageText(msg, bot, env);
+  else if (session.waiting === 'ad_target_bot') await receiveAdTargetBot(msg, bot, env);
+  else if (session.waiting === 'join_message') await receiveJoinMessage(msg, bot, env);
+  else if (session.waiting === 'join_channel') await receiveJoinChannel(msg, bot, env);
+  else if (session.waiting === 'broadcast_msg') await receiveBroadcastMsg(msg, bot, env);
 }
 
-// ─── Callback Handler ──────────────────────────────────────────────────────────
+// ─── Callback Handler ─────────────────────────────────────────────────────────
 
 async function handleCallback(cq, bot, env) {
   const userId = cq.from.id;
@@ -218,22 +221,12 @@ async function handleCallback(cq, bot, env) {
 
   const isAdm = await db.isAdmin(env.DB, userId);
   const isSuper = await db.isSuperAdmin(env.DB, userId);
-
-  if (!isAdm && !isSuper) {
-    await bot.answerCallbackQuery(cq.id, '⛔ دسترسی ندارید!', true);
-    return;
-  }
-
+  if (!isAdm && !isSuper) { await bot.answerCallbackQuery(cq.id, '⛔ دسترسی ندارید!', true); return; }
   await bot.answerCallbackQuery(cq.id);
 
-  // ─── Router ───────────────────────────────────────────────────────────────
   if (data === 'menu_main') {
     clearSession(userId);
-    await bot.editMessageText(
-      chatId, msgId,
-      '🤖 <b>پنل مدیریت ربات دعوت‌گر</b>\n━━━━━━━━━━━━━━━━━━━━\nاز منوی زیر گزینه مورد نظر را انتخاب کنید:',
-      { reply_markup: mainMenuKb(isSuper) }
-    );
+    await bot.editMessageText(chatId, msgId, '🤖 <b>پنل مدیریت ربات</b>\n━━━━━━━━━━━━━━━━━━━━\nاز منوی زیر انتخاب کنید:', { reply_markup: mainMenuKb(isSuper) });
 
   } else if (data === 'menu_stats') {
     await showStats(chatId, msgId, bot, env);
@@ -244,138 +237,105 @@ async function handleCallback(cq, bot, env) {
 
   } else if (data === 'menu_sources') {
     await showSources(chatId, msgId, bot, env);
-
   } else if (data === 'add_source') {
     setSession(userId, { waiting: 'source_link' });
-    await bot.editMessageText(
-      chatId, msgId,
-      '📥 <b>اضافه کردن کانال/گروه مبدا</b>\n\nلینک یا @یوزرنیم کانال را ارسال کنید:\nمثال: <code>https://t.me/channel</code> یا <code>@channel</code>\n\n⚠️ ربات باید قبلاً عضو اون کانال باشه.',
-      { reply_markup: inlineKb([backBtn('menu_sources')]) }
-    );
-
+    await bot.editMessageText(chatId, msgId, '📥 لینک یا @یوزرنیم کانال/گروه مبدا را ارسال کنید:\n⚠️ ربات باید عضو آن باشد.', { reply_markup: inlineKb([backBtn('menu_sources')]) });
   } else if (data.startsWith('del_src_')) {
-    const chId = data.replace('del_src_', '');
-    await db.removeSourceChannel(env.DB, chId);
-    await bot.answerCallbackQuery(cq.id, '✅ کانال حذف شد!', true);
+    await db.removeSourceChannel(env.DB, data.replace('del_src_', ''));
     await showSources(chatId, msgId, bot, env);
 
   } else if (data === 'menu_targets') {
     await showTargets(chatId, msgId, bot, env);
-
   } else if (data === 'add_target') {
     setSession(userId, { waiting: 'target_link' });
-    await bot.editMessageText(
-      chatId, msgId,
-      '📤 <b>اضافه کردن کانال/گروه مقصد</b>\n\nلینک یا @یوزرنیم کانال را ارسال کنید:\nمثال: <code>https://t.me/my_channel</code>\n\n⚠️ ربات باید ادمین اون کانال باشه.',
-      { reply_markup: inlineKb([backBtn('menu_targets')]) }
-    );
-
+    await bot.editMessageText(chatId, msgId, '📤 لینک یا @یوزرنیم کانال/گروه مقصد را ارسال کنید:\n⚠️ ربات باید ادمین آن باشد.', { reply_markup: inlineKb([backBtn('menu_targets')]) });
   } else if (data.startsWith('del_tgt_')) {
-    const chId = data.replace('del_tgt_', '');
-    await db.removeTargetChannel(env.DB, chId);
-    await bot.answerCallbackQuery(cq.id, '✅ کانال حذف شد!', true);
+    await db.removeTargetChannel(env.DB, data.replace('del_tgt_', ''));
     await showTargets(chatId, msgId, bot, env);
 
   } else if (data === 'menu_invite') {
     await showInviteMsg(chatId, msgId, bot, env);
-
   } else if (data === 'edit_invite_msg') {
     setSession(userId, { waiting: 'invite_msg' });
-    const targets = await db.getTargetChannels(env.DB);
-    const tgtLinks = targets.map(t => `• ${t.channel_link}`).join('\n') || '(هنوز کانال مقصدی اضافه نشده)';
-    await bot.editMessageText(
-      chatId, msgId,
-      `✏️ <b>متن پیام دعوت را بنویسید:</b>\n\nاز <code>{link}</code> برای درج لینک دعوت استفاده کنید.\n\n<b>کانال‌های مقصد:</b>\n${tgtLinks}\n\nمثال:\n<code>سلام! به کانال ما بپیوندید 👇\n{link}</code>`,
-      { reply_markup: inlineKb([backBtn('menu_invite')]) }
-    );
+    await bot.editMessageText(chatId, msgId, '✏️ متن پیام دعوت را بنویسید:', { reply_markup: inlineKb([backBtn('menu_invite')]) });
 
   } else if (data === 'menu_settings') {
     await showSettings(chatId, msgId, bot, env);
-
   } else if (data === 'toggle_bot') {
     const cur = await db.getSetting(env.DB, 'bot_active');
     await db.setSetting(env.DB, 'bot_active', cur === '1' ? '0' : '1');
     await showSettings(chatId, msgId, bot, env);
-
   } else if (data === 'set_delay') {
     setSession(userId, { waiting: 'set_delay' });
-    await bot.editMessageText(chatId, msgId,
-      '⏱ <b>تاخیر بین پیام‌ها</b>\n\nعدد تاخیر (ثانیه) را بنویسید:\nمثال: <code>5</code>',
-      { reply_markup: inlineKb([backBtn('menu_settings')]) }
-    );
-
+    await bot.editMessageText(chatId, msgId, '⏱ تاخیر بین پیام‌ها (ثانیه) را بنویسید:', { reply_markup: inlineKb([backBtn('menu_settings')]) });
   } else if (data === 'set_max_daily') {
     setSession(userId, { waiting: 'set_max_daily' });
-    await bot.editMessageText(chatId, msgId,
-      '📊 <b>حداکثر دعوت روزانه</b>\n\nعدد را بنویسید:\nمثال: <code>100</code>',
-      { reply_markup: inlineKb([backBtn('menu_settings')]) }
-    );
+    await bot.editMessageText(chatId, msgId, '📊 حداکثر دعوت روزانه را بنویسید:', { reply_markup: inlineKb([backBtn('menu_settings')]) });
 
   } else if (data === 'menu_admins') {
-    if (!isSuper) { await bot.answerCallbackQuery(cq.id, '⛔ فقط سوپر ادمین!', true); return; }
+    if (!isSuper) return;
     await showAdmins(chatId, msgId, bot, env);
-
   } else if (data === 'add_admin') {
-    if (!isSuper) return;
     setSession(userId, { waiting: 'admin_id_add' });
-    await bot.editMessageText(chatId, msgId,
-      '👑 آیدی عددی کاربر جدید را ارسال کنید:',
-      { reply_markup: inlineKb([backBtn('menu_admins')]) }
-    );
-
+    await bot.editMessageText(chatId, msgId, '👑 آیدی عددی ادمین جدید را بنویسید:', { reply_markup: inlineKb([backBtn('menu_admins')]) });
   } else if (data === 'remove_admin') {
-    if (!isSuper) return;
     setSession(userId, { waiting: 'admin_id_remove' });
-    await bot.editMessageText(chatId, msgId,
-      '🗑 آیدی عددی ادمینی که می‌خواهید حذف کنید را بنویسید:',
-      { reply_markup: inlineKb([backBtn('menu_admins')]) }
-    );
+    await bot.editMessageText(chatId, msgId, '🗑 آیدی عددی ادمینی که میخواهید حذف کنید را بنویسید:', { reply_markup: inlineKb([backBtn('menu_admins')]) });
 
-  } else if (data === 'menu_start_invite') {
-    await showStartInvite(chatId, msgId, bot, env);
-
-  } else if (data === 'confirm_invite') {
-    await bot.editMessageText(chatId, msgId,
-      '⏳ <b>در حال شروع ارسال دعوت‌نامه...</b>\n\nگزارش نهایی به شما ارسال می‌شود.',
-      { reply_markup: inlineKb([]) }
-    );
-    await runInviteProcess(chatId, bot, env);
-
-  // ─── Ad Group Panel ──────────────────────────────────────────────────────
   } else if (data === 'menu_ads') {
     await showAdPanel(chatId, msgId, bot, env);
-
   } else if (data === 'ad_toggle') {
     const cur = await db.getSetting(env.DB, 'ad_listener_active');
     await db.setSetting(env.DB, 'ad_listener_active', cur === '1' ? '0' : '1');
     await showAdPanel(chatId, msgId, bot, env);
-
   } else if (data === 'ad_add_group') {
     setSession(userId, { waiting: 'ad_group_link' });
-    await bot.editMessageText(chatId, msgId,
-      '📢 <b>اضافه کردن گروه تبلیغاتی</b>\n\nلینک یا @یوزرنیم گروه را ارسال کنید:\nمثال: <code>https://t.me/mygroup</code>\n\n⚠️ ربات باید عضو اون گروه باشه.',
-      { reply_markup: inlineKb([backBtn('menu_ads')]) }
-    );
-
+    await bot.editMessageText(chatId, msgId, '📢 لینک گروه را ارسال کنید:\n⚠️ ربات باید عضو گروه باشد.', { reply_markup: inlineKb([backBtn('menu_ads')]) });
   } else if (data.startsWith('ad_del_grp_')) {
-    const gId = data.replace('ad_del_grp_', '');
-    await db.removeAdGroup(env.DB, gId);
-    await bot.answerCallbackQuery(cq.id, '✅ گروه حذف شد!', true);
+    await db.removeAdGroup(env.DB, data.replace('ad_del_grp_', ''));
     await showAdPanel(chatId, msgId, bot, env);
-
   } else if (data === 'ad_edit_msg') {
     setSession(userId, { waiting: 'ad_message_text' });
-    await bot.editMessageText(chatId, msgId,
-      '✏️ <b>متن پیام تبلیغاتی را بنویسید:</b>\n\nاین پیام به صورت <b>خصوصی</b> برای کاربران فعال در گروه ارسال می‌شود.\n\nمی‌توانید از HTML استفاده کنید:\n<code>&lt;b&gt;بولد&lt;/b&gt;</code> | <code>&lt;a href=\"لینک\"&gt;متن&lt;/a&gt;</code>',
-      { reply_markup: inlineKb([backBtn('menu_ads')]) }
-    );
+    await bot.editMessageText(chatId, msgId, '✏️ متن پیام تبلیغاتی را بنویسید:', { reply_markup: inlineKb([backBtn('menu_ads')]) });
+  } else if (data === 'ad_settings') {
+    await showAdSettings(chatId, msgId, bot, env);
+  } else if (data === 'ad_set_target_bot') {
+    setSession(userId, { waiting: 'ad_target_bot' });
+    await bot.editMessageText(chatId, msgId, '🤖 یوزرنیم ربات مقصد را بنویسید (بدون @):\nمثال: mybot', { reply_markup: inlineKb([backBtn('ad_settings')]) });
+  } else if (data === 'ad_type_button') {
+    await db.setSetting(env.DB, 'ad_button_type', 'button');
+    await showAdSettings(chatId, msgId, bot, env);
+  } else if (data === 'ad_type_mention') {
+    await db.setSetting(env.DB, 'ad_button_type', 'mention');
+    await showAdSettings(chatId, msgId, bot, env);
+  } else if (data.startsWith('ad_delete_')) {
+    const secs = data.replace('ad_delete_', '');
+    await db.setSetting(env.DB, 'ad_delete_after', secs);
+    await showAdSettings(chatId, msgId, bot, env);
 
-  } else if (data === 'ad_stats') {
-    await showAdStats(chatId, msgId, bot, env);
+  } else if (data === 'menu_join') {
+    await showJoinPanel(chatId, msgId, bot, env);
+  } else if (data === 'join_toggle') {
+    const cur = await db.getSetting(env.DB, 'join_request_active');
+    await db.setSetting(env.DB, 'join_request_active', cur === '1' ? '0' : '1');
+    await showJoinPanel(chatId, msgId, bot, env);
+  } else if (data === 'join_edit_msg') {
+    setSession(userId, { waiting: 'join_message' });
+    await bot.editMessageText(chatId, msgId, '✏️ پیامی که به کاربر هنگام Join Request ارسال میشود را بنویسید:', { reply_markup: inlineKb([backBtn('menu_join')]) });
+  } else if (data === 'join_add_channel') {
+    setSession(userId, { waiting: 'join_channel' });
+    await bot.editMessageText(chatId, msgId, '📢 لینک کانالی که Join Request دارد را ارسال کنید:\n⚠️ ربات باید ادمین کانال باشد.', { reply_markup: inlineKb([backBtn('menu_join')]) });
+  } else if (data === 'join_stats') {
+    await showJoinStats(chatId, msgId, bot, env);
+  } else if (data === 'menu_broadcast') {
+    await showBroadcast(chatId, msgId, bot, env);
+  } else if (data === 'broadcast_start') {
+    setSession(userId, { waiting: 'broadcast_msg' });
+    await bot.editMessageText(chatId, msgId, '📤 متن پیامی که میخواهید به همه کاربران ارسال شود را بنویسید:', { reply_markup: inlineKb([backBtn('menu_broadcast')]) });
   }
 }
 
-// ─── UI Screens ────────────────────────────────────────────────────────────────
+// ─── UI Screens ───────────────────────────────────────────────────────────────
 
 async function showStats(chatId, msgId, bot, env) {
   const stats = await db.getStats(env.DB);
@@ -384,6 +344,7 @@ async function showStats(chatId, msgId, bot, env) {
     `👥 کل ممبرهای جذب‌شده: <b>${stats.total}</b>\n` +
     `📅 امروز: <b>${stats.today}</b>\n` +
     `✉️ پیام‌های ارسال‌شده: <b>${stats.sent}</b>\n` +
+    `🔗 Join Request تأیید‌شده: <b>${stats.joins}</b>\n` +
     `📥 کانال‌های مبدا: <b>${stats.sources}</b>\n` +
     `📤 کانال‌های مقصد: <b>${stats.targets}</b>\n` +
     `👑 تعداد ادمین‌ها: <b>${stats.admins}</b>`,
@@ -393,15 +354,13 @@ async function showStats(chatId, msgId, bot, env) {
 
 async function showMembers(chatId, msgId, bot, env, page = 0) {
   const members = await db.getMembers(env.DB, 8, page * 8);
-  let text = `👥 <b>لیست ممبرهای جذب‌شده</b> (صفحه ${page + 1})\n━━━━━━━━━━━━━━━━━━━━\n`;
-  if (!members.length) {
-    text += '\n📭 هنوز هیچ ممبری جذب نشده.';
-  } else {
+  let text = `👥 <b>لیست ممبرها</b> (صفحه ${page + 1})\n━━━━━━━━━━━━━━━━━━━━\n`;
+  if (!members.length) { text += '\n📭 هیچ ممبری ثبت نشده.'; }
+  else {
     for (const m of members) {
       const mention = m.username ? `@${m.username}` : `<code>${m.user_id}</code>`;
       const name = [m.first_name, m.last_name].filter(Boolean).join(' ') || 'بی‌نام';
-      const icon = m.message_sent ? '✅' : '⏳';
-      text += `\n${icon} ${mention} — ${name}\n   📥 ${m.source_channel_id} → 📤 ${m.target_channel_id}\n   🕐 ${(m.converted_at || '').slice(0, 16)}`;
+      text += `\n${m.message_sent ? '✅' : '⏳'} ${mention} — ${name}\n   🕐 ${(m.converted_at || '').slice(0, 16)}`;
     }
   }
   const nav = [];
@@ -416,16 +375,11 @@ async function showSources(chatId, msgId, bot, env) {
   let text = '📥 <b>کانال‌های مبدا</b>\n━━━━━━━━━━━━━━━━━━━━\n';
   for (const ch of channels) {
     const count = await db.getMembersCountBySource(env.DB, ch.channel_id);
-    text += `\n${ch.is_active ? '✅' : '❌'} <b>${ch.channel_title || ch.channel_id}</b>\n🔗 ${ch.channel_link}\n👥 ${count} ممبر جذب‌شده`;
+    text += `\n${ch.is_active ? '✅' : '❌'} <b>${ch.channel_title || ch.channel_id}</b>\n👥 ${count} ممبر`;
   }
   if (!channels.length) text += '\nهیچ کانالی اضافه نشده.';
-  const rows = [
-    [{ text: '➕ اضافه کردن', callback_data: 'add_source' }],
-  ];
-  if (channels.length) {
-    const delBtns = channels.map(ch => ({ text: `🗑 ${ch.channel_title || ch.channel_id}`, callback_data: `del_src_${ch.channel_id}` }));
-    rows.push(delBtns);
-  }
+  const rows = [[{ text: '➕ اضافه کردن', callback_data: 'add_source' }]];
+  if (channels.length) rows.push(channels.map(ch => ({ text: `🗑 ${ch.channel_title || ch.channel_id}`, callback_data: `del_src_${ch.channel_id}` })));
   rows.push(backBtn());
   await bot.editMessageText(chatId, msgId, text, { reply_markup: inlineKb(rows) });
 }
@@ -433,17 +387,10 @@ async function showSources(chatId, msgId, bot, env) {
 async function showTargets(chatId, msgId, bot, env) {
   const channels = await db.getTargetChannels(env.DB);
   let text = '📤 <b>کانال‌های مقصد</b>\n━━━━━━━━━━━━━━━━━━━━\n';
-  for (const ch of channels) {
-    text += `\n${ch.is_active ? '✅' : '❌'} <b>${ch.channel_title || ch.channel_id}</b>\n🔗 ${ch.channel_link}`;
-  }
+  for (const ch of channels) text += `\n${ch.is_active ? '✅' : '❌'} <b>${ch.channel_title || ch.channel_id}</b>`;
   if (!channels.length) text += '\nهیچ کانالی اضافه نشده.';
-  const rows = [
-    [{ text: '➕ اضافه کردن', callback_data: 'add_target' }],
-  ];
-  if (channels.length) {
-    const delBtns = channels.map(ch => ({ text: `🗑 ${ch.channel_title || ch.channel_id}`, callback_data: `del_tgt_${ch.channel_id}` }));
-    rows.push(delBtns);
-  }
+  const rows = [[{ text: '➕ اضافه کردن', callback_data: 'add_target' }]];
+  if (channels.length) rows.push(channels.map(ch => ({ text: `🗑 ${ch.channel_title || ch.channel_id}`, callback_data: `del_tgt_${ch.channel_id}` })));
   rows.push(backBtn());
   await bot.editMessageText(chatId, msgId, text, { reply_markup: inlineKb(rows) });
 }
@@ -460,9 +407,8 @@ async function showSettings(chatId, msgId, bot, env) {
   const active = await db.getSetting(env.DB, 'bot_active');
   const delay = await db.getSetting(env.DB, 'delay_between_messages');
   const maxD = await db.getSetting(env.DB, 'max_daily_invites');
-  const status = active === '1' ? '✅ فعال' : '❌ غیرفعال';
   await bot.editMessageText(chatId, msgId,
-    `⚙️ <b>تنظیمات ربات</b>\n━━━━━━━━━━━━━━━━━━━━\n\n🤖 وضعیت: <b>${status}</b>\n⏱ تاخیر: <b>${delay} ثانیه</b>\n📊 حد روزانه: <b>${maxD}</b>`,
+    `⚙️ <b>تنظیمات ربات</b>\n━━━━━━━━━━━━━━━━━━━━\n\n🤖 وضعیت: <b>${active === '1' ? '✅ فعال' : '❌ غیرفعال'}</b>\n⏱ تاخیر: <b>${delay} ثانیه</b>\n📊 حد روزانه: <b>${maxD}</b>`,
     {
       reply_markup: inlineKb([
         [{ text: active === '1' ? '🔴 غیرفعال کن' : '🟢 فعال کن', callback_data: 'toggle_bot' }],
@@ -476,10 +422,7 @@ async function showSettings(chatId, msgId, bot, env) {
 async function showAdmins(chatId, msgId, bot, env) {
   const admins = await db.getAllAdmins(env.DB);
   let text = '👑 <b>مدیریت ادمین‌ها</b>\n━━━━━━━━━━━━━━━━━━━━\n';
-  for (const a of admins) {
-    const mention = a.username ? `@${a.username}` : `<code>${a.user_id}</code>`;
-    text += `\n${a.is_super ? '⭐' : '👤'} ${mention}`;
-  }
+  for (const a of admins) text += `\n${a.is_super ? '⭐' : '👤'} ${a.username ? `@${a.username}` : `<code>${a.user_id}</code>`}`;
   if (!admins.length) text += '\n(هیچ ادمینی نیست)';
   await bot.editMessageText(chatId, msgId, text, {
     reply_markup: inlineKb([
@@ -490,107 +433,124 @@ async function showAdmins(chatId, msgId, bot, env) {
   });
 }
 
-async function showStartInvite(chatId, msgId, bot, env) {
-  const active = await db.getSetting(env.DB, 'bot_active');
-  const sources = await db.getSourceChannels(env.DB);
-  const targets = await db.getTargetChannels(env.DB);
-  const invMsg = await db.getActiveInviteMessage(env.DB);
+async function showAdPanel(chatId, msgId, bot, env) {
+  const active = await db.getSetting(env.DB, 'ad_listener_active');
+  const adMsg = await db.getActiveAdMessage(env.DB);
+  const groups = await db.getAdGroups(env.DB);
+  const stats = await db.getAdStats(env.DB);
+  const deleteAfter = await db.getSetting(env.DB, 'ad_delete_after') || '30';
+  const buttonType = await db.getSetting(env.DB, 'ad_button_type') || 'button';
+  const targetBot = await db.getSetting(env.DB, 'ad_target_bot') || env.BOT_USERNAME;
 
-  if (active !== '1') {
-    await bot.editMessageText(chatId, msgId, '❌ ربات غیرفعال است. از تنظیمات فعال کنید.', { reply_markup: inlineKb([backBtn()]) });
-    return;
-  }
-  if (!sources.length) {
-    await bot.editMessageText(chatId, msgId, '❌ هیچ کانال مبدایی اضافه نشده.', { reply_markup: inlineKb([backBtn()]) });
-    return;
-  }
-  if (!targets.length) {
-    await bot.editMessageText(chatId, msgId, '❌ هیچ کانال مقصدی اضافه نشده.', { reply_markup: inlineKb([backBtn()]) });
-    return;
-  }
-  if (!invMsg) {
-    await bot.editMessageText(chatId, msgId, '❌ پیام دعوت تنظیم نشده.', { reply_markup: inlineKb([backBtn()]) });
-    return;
-  }
+  let text =
+    `📢 <b>تبلیغ در گروه‌ها</b>\n━━━━━━━━━━━━━━━━━━━━\n\n` +
+    `🤖 وضعیت: <b>${active === '1' ? '✅ فعال' : '❌ غیرفعال'}</b>\n` +
+    `📊 کل ارسال: <b>${stats.total}</b> | امروز: <b>${stats.today}</b>\n` +
+    `👤 کاربران یکتا: <b>${stats.unique}</b>\n` +
+    `🕐 حذف پیام بعد: <b>${deleteAfter} ثانیه</b>\n` +
+    `🔘 نوع پیام: <b>${buttonType === 'button' ? 'دکمه اینلاین' : 'منشن @'}</b>\n` +
+    `🤖 ربات مقصد: <b>@${targetBot}</b>\n\n` +
+    `✉️ پیام: ${adMsg ? adMsg.slice(0, 80) + '...' : '⚠️ تنظیم نشده'}\n\n` +
+    `📋 گروه‌ها (${groups.length}):\n` +
+    groups.map(g => `• ${g.group_title || g.group_id}`).join('\n') || '(هیچ گروهی نیست)';
 
-  const srcList = sources.map(s => `• ${s.channel_title || s.channel_id}`).join('\n');
-  const tgtList = targets.map(t => `• ${t.channel_title || t.channel_id}`).join('\n');
+  const rows = [
+    [{ text: active === '1' ? '🔴 غیرفعال کن' : '🟢 فعال کن', callback_data: 'ad_toggle' }],
+    [{ text: '✏️ ویرایش پیام تبلیغ', callback_data: 'ad_edit_msg' }],
+    [{ text: '⚙️ تنظیمات تبلیغ', callback_data: 'ad_settings' }],
+    [{ text: '➕ اضافه کردن گروه', callback_data: 'ad_add_group' }],
+  ];
+  for (const g of groups) {
+    rows.push([{ text: `🗑 حذف: ${g.group_title || g.group_id}`, callback_data: `ad_del_grp_${g.group_id}` }]);
+  }
+  rows.push(backBtn());
+  await bot.editMessageText(chatId, msgId, text, { reply_markup: inlineKb(rows) });
+}
+
+async function showAdSettings(chatId, msgId, bot, env) {
+  const deleteAfter = await db.getSetting(env.DB, 'ad_delete_after') || '30';
+  const buttonType = await db.getSetting(env.DB, 'ad_button_type') || 'button';
+  const targetBot = await db.getSetting(env.DB, 'ad_target_bot') || env.BOT_USERNAME;
 
   await bot.editMessageText(chatId, msgId,
-    `🚀 <b>شروع ارسال دعوت‌نامه</b>\n━━━━━━━━━━━━━━━━━━━━\n\n📥 <b>مبداها:</b>\n${srcList}\n\n📤 <b>مقصدها:</b>\n${tgtList}\n\n✉️ <b>پیام:</b>\n${invMsg.slice(0, 100)}${invMsg.length > 100 ? '...' : ''}\n\nآیا مطمئن هستید؟`,
+    `⚙️ <b>تنظیمات تبلیغ</b>\n━━━━━━━━━━━━━━━━━━━━\n\n` +
+    `🕐 حذف پیام بعد: <b>${deleteAfter} ثانیه</b>\n` +
+    `🔘 نوع: <b>${buttonType === 'button' ? 'دکمه اینلاین' : 'منشن @'}</b>\n` +
+    `🤖 ربات مقصد: <b>@${targetBot}</b>`,
     {
       reply_markup: inlineKb([
-        [{ text: '✅ بله، شروع کن!', callback_data: 'confirm_invite' }],
-        [{ text: '❌ انصراف', callback_data: 'menu_main' }],
+        [{ text: '🤖 تغییر ربات مقصد', callback_data: 'ad_set_target_bot' }],
+        [
+          { text: buttonType === 'button' ? '✅ دکمه' : '🔘 دکمه', callback_data: 'ad_type_button' },
+          { text: buttonType === 'mention' ? '✅ منشن @' : '🔘 منشن @', callback_data: 'ad_type_mention' },
+        ],
+        [{ text: '⏱ حذف بعد 5 ثانیه', callback_data: 'ad_delete_5' }],
+        [{ text: '⏱ حذف بعد 10 ثانیه', callback_data: 'ad_delete_10' }],
+        [{ text: '⏱ حذف بعد 15 ثانیه', callback_data: 'ad_delete_15' }],
+        [{ text: '⏱ حذف بعد 20 ثانیه', callback_data: 'ad_delete_20' }],
+        [{ text: '⏱ حذف بعد 30 ثانیه', callback_data: 'ad_delete_30' }],
+        [{ text: '⏱ حذف بعد 1 دقیقه', callback_data: 'ad_delete_60' }],
+        backBtn('menu_ads'),
       ])
     }
   );
 }
 
-// ─── Invite Process ────────────────────────────────────────────────────────────
+async function showJoinPanel(chatId, msgId, bot, env) {
+  const active = await db.getSetting(env.DB, 'join_request_active');
+  const joinMsg = await db.getSetting(env.DB, 'join_request_message');
+  const stats = await db.getJoinStats(env.DB);
 
-async function runInviteProcess(adminChatId, bot, env) {
-  const sources = await db.getSourceChannels(env.DB);
-  const targets = await db.getTargetChannels(env.DB);
-  const invMsgTemplate = await db.getActiveInviteMessage(env.DB);
-  const delay = parseInt(await db.getSetting(env.DB, 'delay_between_messages') || '3') * 1000;
-  const maxDaily = parseInt(await db.getSetting(env.DB, 'max_daily_invites') || '50');
-  const admins = await db.getAllAdmins(env.DB);
-  const adminIds = admins.map(a => a.user_id);
-
-  let totalSent = 0, totalSkipped = 0;
-  const report = ['📊 <b>گزارش ارسال دعوت‌نامه</b>\n━━━━━━━━━━━━━━━━━━━━'];
-
-  for (const target of targets) {
-    let inviteLink;
-    try {
-      const res = await bot.exportChatInviteLink(target.channel_id);
-      inviteLink = res.result;
-    } catch {
-      report.push(`❌ خطا در گرفتن لینک ${target.channel_title}`);
-      continue;
+  await bot.editMessageText(chatId, msgId,
+    `🔗 <b>سیستم Join Request</b>\n━━━━━━━━━━━━━━━━━━━━\n\n` +
+    `وضعیت: <b>${active === '1' ? '✅ فعال' : '❌ غیرفعال'}</b>\n\n` +
+    `📊 آمار:\n` +
+    `• کل درخواست‌ها: <b>${stats.total}</b>\n` +
+    `• تأیید‌شده: <b>${stats.approved}</b>\n` +
+    `• در انتظار: <b>${stats.pending}</b>\n\n` +
+    `📝 پیام فعلی:\n${joinMsg || '(تنظیم نشده)'}\n\n` +
+    `⚠️ <b>نحوه فعال‌سازی:</b>\n` +
+    `۱. کانال را روی Join Request بگذارید\n` +
+    `۲. ربات را ادمین کانال کنید\n` +
+    `۳. سیستم را فعال کنید`,
+    {
+      reply_markup: inlineKb([
+        [{ text: active === '1' ? '🔴 غیرفعال کن' : '🟢 فعال کن', callback_data: 'join_toggle' }],
+        [{ text: '✏️ ویرایش پیام', callback_data: 'join_edit_msg' }],
+        [{ text: '📊 آمار تفصیلی', callback_data: 'join_stats' }],
+        backBtn(),
+      ])
     }
-
-    const invMsg = invMsgTemplate.replace(/\{link\}/g, inviteLink);
-
-    for (const source of sources) {
-      report.push(`\n📥 <b>${source.channel_title}</b> → 📤 <b>${target.channel_title}</b>`);
-      let srcSent = 0, srcSkipped = 0;
-
-      try {
-        // دریافت ادمین‌های کانال مبدا (برای اسکیپ کردن)
-        const adminsRes = await bot.getChatAdministrators(source.channel_id);
-        const chAdminIds = adminsRes.result ? adminsRes.result.map(a => a.user.id) : [];
-
-        // ⚠️ Bot API نمی‌تونه لیست کامل ممبرها رو بده (فقط برای supergroups)
-        // این قسمت به userbot/telethon نیاز داره
-        // اما ربات می‌تونه از طریق forward یا new member events کار کنه
-        report.push('   ℹ️ برای دریافت لیست ممبرها از طریق رویدادهای ورود ثبت می‌شن');
-
-      } catch (e) {
-        report.push(`   ❌ خطا: ${e.message}`);
-        srcSkipped++;
-      }
-
-      report.push(`   ✉️ ارسال: <b>${srcSent}</b> | رد: <b>${srcSkipped}</b>`);
-      totalSent += srcSent;
-      totalSkipped += srcSkipped;
-    }
-  }
-
-  report.push(`\n━━━━━━━━━━━━━━━━━━━━`);
-  report.push(`✅ کل ارسال‌شده: <b>${totalSent}</b>`);
-  report.push(`⏭ رد/بلاک: <b>${totalSkipped}</b>`);
-
-  // ارسال گزارش به همه ادمین‌ها
-  for (const aid of [...new Set([adminChatId, ...adminIds])]) {
-    try {
-      await bot.sendMessage(aid, report.join('\n'));
-    } catch {}
-  }
+  );
 }
 
-// ─── Input Receivers ───────────────────────────────────────────────────────────
+async function showJoinStats(chatId, msgId, bot, env) {
+  const stats = await db.getJoinStats(env.DB);
+  await bot.editMessageText(chatId, msgId,
+    `📊 <b>آمار Join Request</b>\n━━━━━━━━━━━━━━━━━━━━\n\n` +
+    `کل درخواست‌ها: <b>${stats.total}</b>\n` +
+    `تأیید‌شده: <b>${stats.approved}</b>\n` +
+    `در انتظار: <b>${stats.pending}</b>`,
+    { reply_markup: inlineKb([backBtn('menu_join')]) }
+  );
+}
+
+async function showBroadcast(chatId, msgId, bot, env) {
+  const userIds = await db.getAllUserIds(env.DB);
+  await bot.editMessageText(chatId, msgId,
+    `📤 <b>ارسال پیام به همه</b>\n━━━━━━━━━━━━━━━━━━━━\n\n` +
+    `👥 تعداد کاربران: <b>${userIds.length}</b>\n\n` +
+    `این پیام به همه کاربرانی که قبلاً ربات را استارت زده‌اند ارسال می‌شود.`,
+    {
+      reply_markup: inlineKb([
+        [{ text: '📤 ارسال پیام', callback_data: 'broadcast_start' }],
+        backBtn(),
+      ])
+    }
+  );
+}
+
+// ─── Input Receivers ──────────────────────────────────────────────────────────
 
 async function receiveSourceLink(msg, bot, env) {
   const userId = msg.from.id;
@@ -598,16 +558,13 @@ async function receiveSourceLink(msg, bot, env) {
   let channelId = link;
   if (link.includes('t.me/')) channelId = '@' + link.split('t.me/').pop().replace(/\/$/, '');
   else if (!link.startsWith('@') && !link.startsWith('-')) channelId = '@' + link;
-
   try {
     const res = await bot.getChat(channelId);
     if (!res.ok) throw new Error(res.description);
-    const chat = res.result;
-    const memRes = await bot.getChatMember(chat.id, (await bot.getChat('me'))?.result?.id || 0);
-    await db.addSourceChannel(env.DB, String(chat.id), chat.title || chat.username, link);
-    await bot.sendMessage(msg.chat.id, `✅ کانال <b>${chat.title || chat.username}</b> به عنوان مبدا اضافه شد!\n🆔 <code>${chat.id}</code>`);
+    await db.addSourceChannel(env.DB, String(res.result.id), res.result.title || res.result.username, link);
+    await bot.sendMessage(msg.chat.id, `✅ <b>${res.result.title || res.result.username}</b> اضافه شد!`);
   } catch (e) {
-    await bot.sendMessage(msg.chat.id, `❌ خطا: ${e.message}\n\nمطمئن شوید ربات در کانال عضو است.`);
+    await bot.sendMessage(msg.chat.id, `❌ خطا: ${e.message}`);
   }
   clearSession(userId);
 }
@@ -618,13 +575,11 @@ async function receiveTargetLink(msg, bot, env) {
   let channelId = link;
   if (link.includes('t.me/')) channelId = '@' + link.split('t.me/').pop().replace(/\/$/, '');
   else if (!link.startsWith('@') && !link.startsWith('-')) channelId = '@' + link;
-
   try {
     const res = await bot.getChat(channelId);
     if (!res.ok) throw new Error(res.description);
-    const chat = res.result;
-    await db.addTargetChannel(env.DB, String(chat.id), chat.title || chat.username, link);
-    await bot.sendMessage(msg.chat.id, `✅ کانال <b>${chat.title || chat.username}</b> به عنوان مقصد اضافه شد!\n🆔 <code>${chat.id}</code>`);
+    await db.addTargetChannel(env.DB, String(res.result.id), res.result.title || res.result.username, link);
+    await bot.sendMessage(msg.chat.id, `✅ <b>${res.result.title || res.result.username}</b> اضافه شد!`);
   } catch (e) {
     await bot.sendMessage(msg.chat.id, `❌ خطا: ${e.message}`);
   }
@@ -638,110 +593,32 @@ async function receiveInviteMsg(msg, bot, env) {
 }
 
 async function receiveAdminAdd(msg, bot, env) {
-  const userId = msg.from.id;
   const targetId = parseInt(msg.text.trim());
-  if (isNaN(targetId)) {
-    await bot.sendMessage(msg.chat.id, '❌ آیدی باید عدد باشد.');
-  } else {
-    await db.addAdmin(env.DB, targetId, null, 0);
-    await bot.sendMessage(msg.chat.id, `✅ کاربر <code>${targetId}</code> به عنوان ادمین اضافه شد.`);
-  }
-  clearSession(userId);
+  if (isNaN(targetId)) { await bot.sendMessage(msg.chat.id, '❌ آیدی باید عدد باشد.'); }
+  else { await db.addAdmin(env.DB, targetId, null, 0); await bot.sendMessage(msg.chat.id, `✅ ادمین <code>${targetId}</code> اضافه شد.`); }
+  clearSession(msg.from.id);
 }
 
 async function receiveAdminRemove(msg, bot, env) {
-  const userId = msg.from.id;
   const targetId = parseInt(msg.text.trim());
-  if (isNaN(targetId)) {
-    await bot.sendMessage(msg.chat.id, '❌ آیدی باید عدد باشد.');
-  } else {
-    await db.removeAdmin(env.DB, targetId);
-    await bot.sendMessage(msg.chat.id, `✅ ادمین <code>${targetId}</code> حذف شد.`);
-  }
-  clearSession(userId);
+  if (isNaN(targetId)) { await bot.sendMessage(msg.chat.id, '❌ آیدی باید عدد باشد.'); }
+  else { await db.removeAdmin(env.DB, targetId); await bot.sendMessage(msg.chat.id, `✅ ادمین <code>${targetId}</code> حذف شد.`); }
+  clearSession(msg.from.id);
 }
 
 async function receiveDelaySetting(msg, bot, env) {
   const val = parseInt(msg.text.trim());
-  if (isNaN(val) || val < 1) {
-    await bot.sendMessage(msg.chat.id, '❌ عدد معتبر وارد کنید (حداقل ۱).');
-  } else {
-    await db.setSetting(env.DB, 'delay_between_messages', String(val));
-    await bot.sendMessage(msg.chat.id, `✅ تاخیر به <b>${val} ثانیه</b> تغییر یافت.`);
-  }
+  if (isNaN(val) || val < 1) { await bot.sendMessage(msg.chat.id, '❌ عدد معتبر وارد کنید.'); }
+  else { await db.setSetting(env.DB, 'delay_between_messages', String(val)); await bot.sendMessage(msg.chat.id, `✅ تاخیر به <b>${val} ثانیه</b> تغییر یافت.`); }
   clearSession(msg.from.id);
 }
 
 async function receiveMaxDailySetting(msg, bot, env) {
   const val = parseInt(msg.text.trim());
-  if (isNaN(val) || val < 1) {
-    await bot.sendMessage(msg.chat.id, '❌ عدد معتبر وارد کنید.');
-  } else {
-    await db.setSetting(env.DB, 'max_daily_invites', String(val));
-    await bot.sendMessage(msg.chat.id, `✅ حد روزانه به <b>${val}</b> تغییر یافت.`);
-  }
+  if (isNaN(val) || val < 1) { await bot.sendMessage(msg.chat.id, '❌ عدد معتبر وارد کنید.'); }
+  else { await db.setSetting(env.DB, 'max_daily_invites', String(val)); await bot.sendMessage(msg.chat.id, `✅ حد روزانه به <b>${val}</b> تغییر یافت.`); }
   clearSession(msg.from.id);
 }
-
-// ─── Ad Panel UI ──────────────────────────────────────────────────────────────
-
-async function showAdPanel(chatId, msgId, bot, env) {
-  const active = await db.getSetting(env.DB, 'ad_listener_active');
-  const adMsg = await db.getActiveAdMessage(env.DB);
-  const groups = await db.getAdGroups(env.DB);
-  const stats = await db.getAdStats(env.DB);
-  const status = active === '1' ? '✅ فعال' : '❌ غیرفعال';
-
-  let text =
-    `📢 <b>مدیریت تبلیغ گروه‌ها</b>\n━━━━━━━━━━━━━━━━━━━━\n\n` +
-    `🤖 وضعیت: <b>${status}</b>\n` +
-    `📊 کل ارسال‌شده: <b>${stats.total}</b> | امروز: <b>${stats.today}</b>\n` +
-    `👤 کاربران یکتا: <b>${stats.unique}</b>\n` +
-    `🕐 کولداون: <b>5 روز</b> (هر کاربر)\n` +
-    `🚫 ادمین‌های گروه: خودکار رد می‌شوند\n\n`;
-
-  if (adMsg) {
-    text += `✉️ <b>پیام تبلیغ:</b>\n${adMsg.slice(0, 120)}${adMsg.length > 120 ? '...' : ''}\n\n`;
-  } else {
-    text += `⚠️ پیام تبلیغ تنظیم نشده!\n\n`;
-  }
-
-  text += `📋 <b>گروه‌های فعال (${groups.length}):</b>\n`;
-  for (const g of groups) {
-    text += `• ${g.group_title || g.group_id}\n`;
-  }
-  if (!groups.length) text += '(هیچ گروهی اضافه نشده)\n';
-
-  const rows = [
-    [{ text: active === '1' ? '🔴 غیرفعال کن' : '🟢 فعال کن', callback_data: 'ad_toggle' }],
-    [{ text: '✏️ ویرایش پیام تبلیغ', callback_data: 'ad_edit_msg' }],
-    [{ text: '➕ اضافه کردن گروه', callback_data: 'ad_add_group' },
-     { text: '📊 آمار تفصیلی', callback_data: 'ad_stats' }],
-  ];
-  if (groups.length) {
-    for (const g of groups) {
-      rows.push([{ text: `🗑 حذف: ${g.group_title || g.group_id}`, callback_data: `ad_del_grp_${g.group_id}` }]);
-    }
-  }
-  rows.push(backBtn());
-  await bot.editMessageText(chatId, msgId, text, { reply_markup: inlineKb(rows) });
-}
-
-async function showAdStats(chatId, msgId, bot, env) {
-  const stats = await db.getAdStats(env.DB);
-  const text =
-    `📊 <b>آمار تبلیغات گروه‌ها</b>\n━━━━━━━━━━━━━━━━━━━━\n\n` +
-    `📨 کل پیام‌های ارسال‌شده: <b>${stats.total}</b>\n` +
-    `📅 امروز: <b>${stats.today}</b>\n` +
-    `👤 کاربران یکتا هدف‌گرفته‌شده: <b>${stats.unique}</b>\n` +
-    `📋 گروه‌های فعال: <b>${stats.groups}</b>\n\n` +
-    `⏱ <b>قانون کولداون:</b>\n` +
-    `هر کاربر پس از دریافت تبلیغ، تا <b>5 روز</b> پیام جدید دریافت نمی‌کند.\n\n` +
-    `🚫 <b>ادمین‌ها و مدیران گروه</b> از لیست خودکار حذف می‌شوند.`;
-  await bot.editMessageText(chatId, msgId, text, { reply_markup: inlineKb([backBtn('menu_ads')]) });
-}
-
-// ─── Ad Input Receivers ───────────────────────────────────────────────────────
 
 async function receiveAdGroupLink(msg, bot, env) {
   const userId = msg.from.id;
@@ -749,39 +626,57 @@ async function receiveAdGroupLink(msg, bot, env) {
   let groupId = link;
   if (link.includes('t.me/')) groupId = '@' + link.split('t.me/').pop().replace(/\/$/, '');
   else if (!link.startsWith('@') && !link.startsWith('-')) groupId = '@' + link;
-
   try {
     const res = await bot.getChat(groupId);
     if (!res.ok) throw new Error(res.description);
     const chat = res.result;
-    const type = chat.type;
-    if (type !== 'group' && type !== 'supergroup') {
-      await bot.sendMessage(msg.chat.id, '❌ این یک گروه نیست. لطفاً لینک گروه را ارسال کنید.');
-      clearSession(userId);
-      return;
-    }
+    if (chat.type !== 'group' && chat.type !== 'supergroup') { await bot.sendMessage(msg.chat.id, '❌ این یک گروه نیست.'); clearSession(userId); return; }
     await db.addAdGroup(env.DB, String(chat.id), chat.title || chat.username, link);
-    await bot.sendMessage(msg.chat.id,
-      `✅ گروه <b>${chat.title || chat.username}</b> اضافه شد!\n` +
-      `🆔 <code>${chat.id}</code>\n\n` +
-      `از این پس هر کاربر عادی که در این گروه پیام بدهد، تبلیغ شما را دریافت می‌کند.\n` +
-      `(ادمین‌ها و مدیران گروه پیام دریافت نمی‌کنند)`
-    );
+    await bot.sendMessage(msg.chat.id, `✅ گروه <b>${chat.title || chat.username}</b> اضافه شد!`);
   } catch (e) {
-    await bot.sendMessage(msg.chat.id,
-      `❌ خطا: ${e.message}\n\nمطمئن شوید:\n• ربات عضو گروه است\n• لینک گروه درست است`
-    );
+    await bot.sendMessage(msg.chat.id, `❌ خطا: ${e.message}`);
   }
   clearSession(userId);
 }
 
 async function receiveAdMessageText(msg, bot, env) {
+  await db.setAdMessage(env.DB, msg.text);
+  await bot.sendMessage(msg.chat.id, `✅ پیام تبلیغاتی ذخیره شد!\n\n📝 پیش‌نمایش:\n${msg.text}`);
+  clearSession(msg.from.id);
+}
+
+async function receiveAdTargetBot(msg, bot, env) {
+  const botUsername = msg.text.trim().replace('@', '');
+  await db.setSetting(env.DB, 'ad_target_bot', botUsername);
+  await bot.sendMessage(msg.chat.id, `✅ ربات مقصد به <b>@${botUsername}</b> تغییر یافت.`);
+  clearSession(msg.from.id);
+}
+
+async function receiveJoinMessage(msg, bot, env) {
+  await db.setSetting(env.DB, 'join_request_message', msg.text);
+  await bot.sendMessage(msg.chat.id, '✅ پیام Join Request ذخیره شد!');
+  clearSession(msg.from.id);
+}
+
+async function receiveJoinChannel(msg, bot, env) {
+  await bot.sendMessage(msg.chat.id, '✅ کانال ثبت شد! مطمئن شوید ربات ادمین کانال است.');
+  clearSession(msg.from.id);
+}
+
+async function receiveBroadcastMsg(msg, bot, env) {
   const text = msg.text;
-  await db.setAdMessage(env.DB, text);
-  await bot.sendMessage(msg.chat.id,
-    `✅ پیام تبلیغاتی ذخیره شد!\n\n` +
-    `📝 <b>پیش‌نمایش:</b>\n${text}\n\n` +
-    `این پیام به کاربران فعال در گروه‌های ثبت‌شده ارسال می‌شود.`
-  );
+  const userIds = await db.getAllUserIds(env.DB);
+  await bot.sendMessage(msg.chat.id, `⏳ در حال ارسال به ${userIds.length} کاربر...`);
+
+  let sent = 0, failed = 0;
+  for (const uid of userIds) {
+    try {
+      await bot.sendMessage(uid, text);
+      sent++;
+      await new Promise(r => setTimeout(r, 100));
+    } catch { failed++; }
+  }
+
+  await bot.sendMessage(msg.chat.id, `✅ ارسال تموم شد!\n📤 موفق: <b>${sent}</b>\n❌ ناموفق: <b>${failed}</b>`);
   clearSession(msg.from.id);
 }
