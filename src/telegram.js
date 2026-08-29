@@ -26,32 +26,39 @@ export function tg(token) {
 
     getChatMember: (chat_id, user_id) => call('getChatMember', { chat_id, user_id }),
 
-    getChatMemberCount: (chat_id) => call('getChatMemberCount', { chat_id }),
-
     getChatAdministrators: (chat_id) => call('getChatAdministrators', { chat_id }),
 
     exportChatInviteLink: (chat_id) => call('exportChatInviteLink', { chat_id }),
 
-    setWebhook: (url, secret_token) =>
-    call('setWebhook', { url, secret_token, allowed_updates: ['message', 'callback_query', 'channel_post'] }),
+    approveChatJoinRequest: (chat_id, user_id) =>
+      call('approveChatJoinRequest', { chat_id, user_id }),
 
-    sendMessageWithButton: (chat_id, text, reply_to_message_id, botUsername) =>
+    declineChatJoinRequest: (chat_id, user_id) =>
+      call('declineChatJoinRequest', { chat_id, user_id }),
+
+    deleteMessage: (chat_id, message_id) =>
+      call('deleteMessage', { chat_id, message_id }),
+
+    setWebhook: (url, secret_token) =>
+      call('setWebhook', { url, secret_token, allowed_updates: ['message', 'callback_query', 'chat_join_request'] }),
+
+    sendMessageWithButton: (chat_id, text, reply_to_message_id, targetBot) =>
       call('sendMessage', {
-        chat_id,
-        text,
+        chat_id, text,
         reply_to_message_id,
         reply_markup: {
           inline_keyboard: [[
-            {
-              text: '📩 دریافت پیام ویژه',
-              url: `https://t.me/${botUsername}?start=hi`
-            }
+            { text: '📩 دریافت پیام ویژه', url: `https://t.me/${targetBot}?start=hi` }
           ]]
         }
       }),
 
-    deleteMessage: (chat_id, message_id) =>
-      call('deleteMessage', { chat_id, message_id }),
+    sendMessageWithMention: (chat_id, text, reply_to_message_id, targetBot) =>
+      call('sendMessage', {
+        chat_id,
+        text: `${text}\n\n👉 @${targetBot}`,
+        reply_to_message_id,
+      }),
   };
 }
 
@@ -79,9 +86,9 @@ export function mainMenuKb(isSuper = false) {
       { text: '✉️ پیام دعوت', callback_data: 'menu_invite' },
       { text: '⚙️ تنظیمات', callback_data: 'menu_settings' },
     ],
-    [{ text: '🚀 شروع ارسال دعوت', callback_data: 'menu_start_invite' }],
+    [{ text: '📢 تبلیغ در گروه‌ها', callback_data: 'menu_ads' }],
+    [{ text: '🔗 سیستم Join Request', callback_data: 'menu_join' }],
   ];
   if (isSuper) rows.push([{ text: '👑 مدیریت ادمین‌ها', callback_data: 'menu_admins' }]);
-  rows.push([{ text: '📢 مدیریت تبلیغ گروه‌ها', callback_data: 'menu_ads' }]);
   return inlineKb(rows);
 }
