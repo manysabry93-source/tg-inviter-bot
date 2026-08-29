@@ -49,7 +49,6 @@ CREATE TABLE IF NOT EXISTS invite_messages (
   created_at TEXT DEFAULT (datetime('now'))
 );
 
--- جدول گروه‌های تبلیغاتی (ربات داخلشون عضوه و پیام مانیتور می‌کنه)
 CREATE TABLE IF NOT EXISTS ad_groups (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   group_id TEXT UNIQUE,
@@ -59,7 +58,6 @@ CREATE TABLE IF NOT EXISTS ad_groups (
   added_at TEXT DEFAULT (datetime('now'))
 );
 
--- جدول متن‌های تبلیغاتی
 CREATE TABLE IF NOT EXISTS ad_messages (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   message_text TEXT,
@@ -67,7 +65,6 @@ CREATE TABLE IF NOT EXISTS ad_messages (
   created_at TEXT DEFAULT (datetime('now'))
 );
 
--- جدول کاربرانی که تبلیغ دریافت کردن (برای جلوگیری از اسپم مکرر)
 CREATE TABLE IF NOT EXISTS ad_sent_log (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id INTEGER,
@@ -75,13 +72,27 @@ CREATE TABLE IF NOT EXISTS ad_sent_log (
   sent_at TEXT DEFAULT (datetime('now'))
 );
 
-CREATE INDEX IF NOT EXISTS idx_ad_sent_user ON ad_sent_log(user_id);
+CREATE TABLE IF NOT EXISTS join_request_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER,
+  username TEXT,
+  first_name TEXT,
+  channel_id TEXT,
+  approved INTEGER DEFAULT 0,
+  requested_at TEXT DEFAULT (datetime('now'))
+);
 
--- تنظیمات پیش‌فرض
+CREATE INDEX IF NOT EXISTS idx_ad_sent_user ON ad_sent_log(user_id);
+CREATE INDEX IF NOT EXISTS idx_join_user ON join_request_log(user_id);
+
 INSERT OR IGNORE INTO bot_settings (key, value) VALUES
   ('bot_active', '1'),
   ('delay_between_messages', '3'),
   ('max_daily_invites', '50'),
   ('ad_listener_active', '1'),
-  ('ad_cooldown_hours', '24'),
-  ('ad_send_once_per_user', '1');
+  ('ad_cooldown_hours', '120'),
+  ('ad_delete_after', '30'),
+  ('ad_button_type', 'button'),
+  ('ad_target_bot', ''),
+  ('join_request_active', '0'),
+  ('join_request_message', 'برای عضویت در کانال ابتدا ربات ما را استارت کنید 👇');
