@@ -11,8 +11,7 @@ export async function isSuperAdmin(DB, userId) {
 }
 
 export async function addAdmin(DB, userId, username, isSuper = 0) {
-  await DB.prepare('INSERT OR IGNORE INTO admins (user_id, username, is_super) VALUES (?, ?, ?)')
-    .bind(userId, username || null, isSuper).run();
+  await DB.prepare('INSERT OR IGNORE INTO admins (user_id, username, is_super) VALUES (?, ?, ?)').bind(userId, username || null, isSuper).run();
 }
 
 export async function removeAdmin(DB, userId) {
@@ -34,8 +33,7 @@ export async function setSetting(DB, key, value) {
 }
 
 export async function addSourceChannel(DB, channelId, title, link) {
-  await DB.prepare('INSERT OR REPLACE INTO source_channels (channel_id, channel_title, channel_link) VALUES (?, ?, ?)')
-    .bind(channelId, title, link).run();
+  await DB.prepare('INSERT OR REPLACE INTO source_channels (channel_id, channel_title, channel_link) VALUES (?, ?, ?)').bind(channelId, title, link).run();
 }
 
 export async function removeSourceChannel(DB, channelId) {
@@ -48,8 +46,7 @@ export async function getSourceChannels(DB) {
 }
 
 export async function addTargetChannel(DB, channelId, title, link) {
-  await DB.prepare('INSERT OR REPLACE INTO target_channels (channel_id, channel_title, channel_link) VALUES (?, ?, ?)')
-    .bind(channelId, title, link).run();
+  await DB.prepare('INSERT OR REPLACE INTO target_channels (channel_id, channel_title, channel_link) VALUES (?, ?, ?)').bind(channelId, title, link).run();
 }
 
 export async function removeTargetChannel(DB, channelId) {
@@ -62,31 +59,23 @@ export async function getTargetChannels(DB) {
 }
 
 export async function logMember(DB, userId, username, firstName, lastName, srcId, tgtId) {
-  await DB.prepare(`INSERT INTO converted_members
-    (user_id, username, first_name, last_name, source_channel_id, target_channel_id, message_sent)
-    VALUES (?, ?, ?, ?, ?, ?, 1)`)
+  await DB.prepare('INSERT INTO converted_members (user_id, username, first_name, last_name, source_channel_id, target_channel_id, message_sent) VALUES (?, ?, ?, ?, ?, ?, 1)')
     .bind(userId, username || null, firstName || null, lastName || null, srcId, tgtId).run();
 }
 
 export async function getStats(DB) {
-  const total     = await DB.prepare('SELECT COUNT(*) as c FROM converted_members').first();
-  const today     = await DB.prepare("SELECT COUNT(*) as c FROM converted_members WHERE DATE(converted_at) = DATE('now')").first();
-  const sent      = await DB.prepare('SELECT COUNT(*) as c FROM converted_members WHERE message_sent = 1').first();
-  const sources   = await DB.prepare('SELECT COUNT(*) as c FROM source_channels').first();
-  const targets   = await DB.prepare('SELECT COUNT(*) as c FROM target_channels').first();
-  const admins    = await DB.prepare('SELECT COUNT(*) as c FROM admins').first();
-  return {
-    total: total.c, today: today.c, sent: sent.c,
-    sources: sources.c, targets: targets.c, admins: admins.c,
-  };
+  const total   = await DB.prepare('SELECT COUNT(*) as c FROM converted_members').first();
+  const today   = await DB.prepare("SELECT COUNT(*) as c FROM converted_members WHERE DATE(converted_at) = DATE('now')").first();
+  const sent    = await DB.prepare('SELECT COUNT(*) as c FROM converted_members WHERE message_sent = 1').first();
+  const sources = await DB.prepare('SELECT COUNT(*) as c FROM source_channels').first();
+  const targets = await DB.prepare('SELECT COUNT(*) as c FROM target_channels').first();
+  const admins  = await DB.prepare('SELECT COUNT(*) as c FROM admins').first();
+  const joins   = await DB.prepare('SELECT COUNT(*) as c FROM join_request_log WHERE approved = 1').first();
+  return { total: total.c, today: today.c, sent: sent.c, sources: sources.c, targets: targets.c, admins: admins.c, joins: joins.c };
 }
 
 export async function getMembers(DB, limit = 10, offset = 0) {
-  const { results } = await DB.prepare(`
-    SELECT user_id, username, first_name, last_name,
-           source_channel_id, target_channel_id, message_sent, converted_at
-    FROM converted_members ORDER BY converted_at DESC LIMIT ? OFFSET ?
-  `).bind(limit, offset).all();
+  const { results } = await DB.prepare('SELECT user_id, username, first_name, last_name, source_channel_id, target_channel_id, message_sent, converted_at FROM converted_members ORDER BY converted_at DESC LIMIT ? OFFSET ?').bind(limit, offset).all();
   return results;
 }
 
@@ -106,17 +95,14 @@ export async function getMembersCountBySource(DB, sourceId) {
 }
 
 export async function alreadyInvited(DB, userId, targetId) {
-  const row = await DB.prepare(
-    'SELECT id FROM converted_members WHERE user_id = ? AND target_channel_id = ?'
-  ).bind(userId, targetId).first();
+  const row = await DB.prepare('SELECT id FROM converted_members WHERE user_id = ? AND target_channel_id = ?').bind(userId, targetId).first();
   return !!row;
 }
 
-// ─── Ad Listener ──────────────────────────────────────────────────────────────
+// ─── Ad Groups ────────────────────────────────────────────────────────────────
 
 export async function addAdGroup(DB, groupId, title, link) {
-  await DB.prepare('INSERT OR REPLACE INTO ad_groups (group_id, group_title, group_link) VALUES (?,?,?)')
-    .bind(groupId, title, link).run();
+  await DB.prepare('INSERT OR REPLACE INTO ad_groups (group_id, group_title, group_link) VALUES (?,?,?)').bind(groupId, title, link).run();
 }
 
 export async function removeAdGroup(DB, groupId) {
@@ -144,12 +130,7 @@ export async function setAdMessage(DB, text) {
 }
 
 export async function wasAdSentRecently(DB, userId, cooldownHours) {
-  const row = await DB.prepare(`
-    SELECT id FROM ad_sent_log
-    WHERE user_id = ?
-    AND datetime(sent_at) > datetime('now', ? || ' hours')
-    LIMIT 1
-  `).bind(userId, `-${cooldownHours}`).first();
+  const row = await DB.prepare("SELECT id FROM ad_sent_log WHERE user_id = ? AND datetime(sent_at) > datetime('now', ? || ' hours') LIMIT 1").bind(userId, `-${cooldownHours}`).first();
   return !!row;
 }
 
@@ -158,9 +139,36 @@ export async function logAdSent(DB, userId, groupId) {
 }
 
 export async function getAdStats(DB) {
-  const total = await DB.prepare('SELECT COUNT(*) as c FROM ad_sent_log').first();
-  const today = await DB.prepare("SELECT COUNT(*) as c FROM ad_sent_log WHERE DATE(sent_at) = DATE('now')").first();
+  const total  = await DB.prepare('SELECT COUNT(*) as c FROM ad_sent_log').first();
+  const today  = await DB.prepare("SELECT COUNT(*) as c FROM ad_sent_log WHERE DATE(sent_at) = DATE('now')").first();
   const groups = await DB.prepare('SELECT COUNT(*) as c FROM ad_groups WHERE is_active = 1').first();
   const unique = await DB.prepare('SELECT COUNT(DISTINCT user_id) as c FROM ad_sent_log').first();
   return { total: total.c, today: today.c, groups: groups.c, unique: unique.c };
+}
+
+// ─── Join Request ─────────────────────────────────────────────────────────────
+
+export async function logJoinRequest(DB, userId, username, firstName, channelId) {
+  await DB.prepare('INSERT OR IGNORE INTO join_request_log (user_id, username, first_name, channel_id) VALUES (?,?,?,?)').bind(userId, username || null, firstName || null, channelId).run();
+}
+
+export async function markJoinApproved(DB, userId, channelId) {
+  await DB.prepare('UPDATE join_request_log SET approved = 1 WHERE user_id = ? AND channel_id = ?').bind(userId, channelId).run();
+}
+
+export async function getPendingJoinRequest(DB, userId) {
+  const row = await DB.prepare('SELECT * FROM join_request_log WHERE user_id = ? AND approved = 0 ORDER BY requested_at DESC LIMIT 1').bind(userId).first();
+  return row;
+}
+
+export async function getJoinStats(DB) {
+  const total    = await DB.prepare('SELECT COUNT(*) as c FROM join_request_log').first();
+  const approved = await DB.prepare('SELECT COUNT(*) as c FROM join_request_log WHERE approved = 1').first();
+  const pending  = await DB.prepare('SELECT COUNT(*) as c FROM join_request_log WHERE approved = 0').first();
+  return { total: total.c, approved: approved.c, pending: pending.c };
+}
+
+export async function getAllUserIds(DB) {
+  const { results } = await DB.prepare('SELECT DISTINCT user_id FROM ad_sent_log UNION SELECT DISTINCT user_id FROM join_request_log WHERE approved = 1').all();
+  return results.map(r => r.user_id);
 }
