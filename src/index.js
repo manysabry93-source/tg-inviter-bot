@@ -62,30 +62,25 @@ async function handleUpdate(update, env) {
 
 async function handleJoinRequest(jr, bot, env) {
   const active = await db.getSetting(env.DB, 'join_request_active');
-  if (active !== '1') {
-    await bot.approveChatJoinRequest(jr.chat.id, jr.from.id);
-    return;
-  }
   const userId = jr.from.id;
   const channelId = String(jr.chat.id);
   const firstName = jr.from.first_name || 'کاربر';
-  const targetBot = env.BOT_USERNAME;
 
+  // فوری تأیید کن
+  await bot.approveChatJoinRequest(jr.chat.id, userId);
   await db.logJoinRequest(env.DB, userId, jr.from.username, firstName, channelId);
+  await db.markJoinApproved(env.DB, userId, channelId);
 
-  const joinMsg = await db.getSetting(env.DB, 'join_request_message');
-  const msgText = joinMsg || 'برای عضویت در کانال ابتدا ربات ما را استارت کنید 👇';
-
-  try {
-    await bot.sendMessage(userId, `👋 ${firstName} عزیز!\n\n${msgText}`, {
-      reply_markup: {
-        inline_keyboard: [[
-          { text: '🤖 استارت ربات', url: `https://t.me/${targetBot}?start=join_${channelId}` }
-        ]]
+  // اگه سیستم فعاله پیام تبلیغ بفرست
+  if (active === '1') {
+    const adText = await db.getActiveAdMessage(env.DB);
+    if (adText) {
+      try {
+        await bot.sendMessage(userId, adText);
+      } catch {
+        // کاربر استارت نزده — نادیده بگیر
       }
-    });
-  } catch {
-    await bot.approveChatJoinRequest(jr.chat.id, userId);
+    }
   }
 }
 
