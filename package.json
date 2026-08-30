@@ -1,16 +1,16 @@
 {
-  "name": "tg-inviter-bot",
+  "name": "farahoosh-bot",
   "version": "1.0.0",
-  "description": "Telegram Inviter Bot on Cloudflare Workers + D1",
-  "main": "src/index.js",
+  "private": true,
+  "type": "module",
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
-    "db:init": "wrangler d1 execute tg-bot-db --file=schema.sql",
-    "db:init:remote": "wrangler d1 execute tg-bot-db --remote --file=schema.sql"
+    "kv:create": "wrangler kv namespace create BOT_DB",
+    "secret:token": "wrangler secret put BOT_TOKEN"
   },
   "devDependencies": {
     "acorn": "^8.18.0",
-    "wrangler": "^3.0.0"
+    "wrangler": "^3.90.0"
   }
 }
