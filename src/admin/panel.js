@@ -1,134 +1,214 @@
-// ---------------------------------------------------------------------------
-// پنل ادمین اصلی: نقطه‌ی ورود (/admin)، ارسال اطلاعیه (متن/عکس/ویدیو/سند +
-// دکمه‌ی لینک اختیاری)، و آمار (تعداد و آیدی کاربران). مدیریت خودِ درخت
-// دکمه‌ها در menuBuilder.js و مدیریت محتوا در contentManager.js است.
-// ---------------------------------------------------------------------------
+// ─── Admin Panel ──────────────────────────────────────────────────────────────
+import * as db from '../db.js';
+import { genNodeId } from '../db.js';
+import { getFileFromMsg } from '../utils/telegram.js';
 
-import { adminMainKeyboard, backButton } from "../keyboards.js";
-import { extractFile, sendFileByType } from "../utils/media.js";
+export function isAdmin(userId, DB) { return db.isAdmin(DB, userId); }
 
-export function isAdmin(userId, adminIds) {
-  return adminIds.includes(String(userId));
-}
-
-export async function showAdminHome(tg, chatId) {
-  await tg.sendMessage(chatId, "🛠 <b>پنل مدیریت ربات</b>\n\nیکی از گزینه‌ها را انتخاب کنید:", {
-    reply_markup: adminMainKeyboard(),
+// ─── Main Menu ────────────────────────────────────────────────────────────────
+export async function showHome(bot, chatId) {
+  await bot.sendMessage(chatId, '👑 <b>پنل مدیریت</b>', {
+    reply_markup: {inline_keyboard:[
+      [{text:'🧩 مدیریت منو', callback_data:'adm:menu_list:root'}],
+      [{text:'📝 مدیریت فرم‌ها', callback_data:'adm:forms'}],
+      [{text:'🔒 گیت دسترسی', callback_data:'adm:gate'}],
+      [{text:'🤖 تنظیمات AI', callback_data:'adm:ai'}],
+      [{text:'🎯 جذب ممبر', callback_data:'adm:attract'}],
+      [{text:'📢 ارسال همگانی', callback_data:'adm:broadcast'}],
+      [{text:'📊 آمار', callback_data:'adm:stats'}],
+      [{text:'👑 مدیریت ادمین‌ها', callback_data:'adm:admins'}],
+    ]}
   });
 }
 
-// ---------------- ارسال اطلاعیه (Broadcast) ----------------
-
-export async function startBroadcast(tg, store, chatId) {
-  await store.setSession(chatId, { type: "admin_broadcast", step: "content" });
-  await tg.sendMessage(
-    chatId,
-    "📢 متن پیام، یا یک عکس/ویدیو/سند (با کپشن دلخواه) که می‌خواهید برای همه‌ی کاربران ارسال شود را بفرستید:",
-    { reply_markup: backButton("admin:home") }
+// ─── Stats ────────────────────────────────────────────────────────────────────
+export async function showStats(bot, DB, chatId) {
+  const users = await db.getUserCount(DB);
+  const adStats = await db.getAdStats(DB);
+  await bot.sendMessage(chatId,
+    `📊 <b>آمار ربات</b>\n━━━━━━━━━━━━━━━━━━━━\n` +
+    `👥 کل کاربران: <b>${users}</b>\n` +
+    `📢 تبلیغ ارسالی: <b>${adStats.adSent}</b>\n` +
+    `📅 امروز: <b>${adStats.adToday}</b>\n` +
+    `🔗 Join تأیید‌شده: <b>${adStats.joinApproved}</b>`,
+    {reply_markup:{inline_keyboard:[[{text:'🔙 بازگشت',callback_data:'adm:home'}]]}}
   );
 }
 
-export async function handleBroadcastInput(tg, store, chatId, text) {
-  const session = await store.getSession(chatId);
-  if (!session || session.type !== "admin_broadcast") return false;
-
-  if (session.step === "content") {
-    session.contentType = "text";
-    session.text = text;
-    session.step = "awaiting_link";
-    await store.setSession(chatId, session);
-    await tg.sendMessage(
-      chatId,
-      "اگر می‌خواهید یک دکمه‌ی لینک زیر پیام اضافه شود، آدرس آن را بفرستید (باید با http یا https شروع شود)؛ در غیر این صورت بنویسید: /skip"
-    );
-    return true;
-  }
-
-  if (session.step === "awaiting_link") {
-    if (text.trim() === "/skip") {
-      session.linkUrl = null;
-      await performBroadcast(tg, store, chatId, session);
-      return true;
-    }
-    if (!/^https?:\/\//i.test(text.trim())) {
-      await tg.sendMessage(chatId, "⚠️ لینک باید با http یا https شروع شود، یا بنویسید /skip");
-      return true;
-    }
-    session.linkUrl = text.trim();
-    session.step = "awaiting_link_label";
-    await store.setSession(chatId, session);
-    await tg.sendMessage(chatId, "متن دکمه‌ی لینک را بفرستید (مثلاً: مشاهده سایت):");
-    return true;
-  }
-
-  if (session.step === "awaiting_link_label") {
-    session.linkLabel = text;
-    await performBroadcast(tg, store, chatId, session);
-    return true;
-  }
-
-  return false;
+// ─── Admins ───────────────────────────────────────────────────────────────────
+export async function showAdmins(bot, DB, chatId) {
+  const admins = await db.getAllAdmins(DB);
+  let text = '👑 <b>ادمین‌ها</b>\n━━━━━━━━━━━━━━━━━━━━\n';
+  for (const a of admins) text += `\n${a.is_super?'⭐':'👤'} ${a.username?'@'+a.username:`<code>${a.user_id}</code>`}`;
+  await bot.sendMessage(chatId, text, {
+    reply_markup:{inline_keyboard:[
+      [{text:'➕ اضافه کردن ادمین', callback_data:'adm:admin_add'}],
+      [{text:'🗑 حذف ادمین', callback_data:'adm:admin_del'}],
+      [{text:'🔙 بازگشت', callback_data:'adm:home'}],
+    ]}
+  });
 }
 
-export async function handleBroadcastFile(tg, store, chatId, msg) {
-  const session = await store.getSession(chatId);
-  if (!session || session.type !== "admin_broadcast" || session.step !== "content") return false;
-
-  const file = extractFile(msg);
-  if (!file) return false;
-
-  session.contentType = file.type;
-  session.fileId = file.fileId;
-  session.caption = msg.caption || "";
-  session.step = "awaiting_link";
-  await store.setSession(chatId, session);
-
-  await tg.sendMessage(
-    chatId,
-    "اگر می‌خواهید یک دکمه‌ی لینک زیر پیام اضافه شود، آدرس آن را بفرستید (باید با http یا https شروع شود)؛ در غیر این صورت بنویسید: /skip"
+// ─── Broadcast ────────────────────────────────────────────────────────────────
+export async function startBroadcast(bot, DB, chatId) {
+  const count = await db.getUserCount(DB);
+  await db.setSession(DB, chatId, {type:'broadcast'});
+  await bot.sendMessage(chatId,
+    `📢 <b>ارسال همگانی</b>\n\n👥 تعداد کاربران: <b>${count}</b>\n\nمتن پیام را بنویسید:`,
+    {reply_markup:{inline_keyboard:[[{text:'❌ انصراف',callback_data:'adm:home'}]]}}
   );
+}
+
+export async function handleBroadcastInput(bot, DB, chatId, text) {
+  const session = await db.getSession(DB, chatId);
+  if (!session || session.type !== 'broadcast') return false;
+  await db.clearSession(DB, chatId);
+
+  const userIds = await db.getAllUserIds(DB);
+  await bot.sendMessage(chatId, `⏳ در حال ارسال به ${userIds.length} کاربر...`);
+
+  let sent=0, failed=0;
+  for (const uid of userIds) {
+    try { await bot.sendMessage(uid, text); sent++; } catch { failed++; }
+    await new Promise(r=>setTimeout(r,50));
+  }
+
+  await bot.sendMessage(chatId, `✅ ارسال تموم شد!\n📤 موفق: <b>${sent}</b>\n❌ ناموفق: <b>${failed}</b>`);
   return true;
 }
 
-async function performBroadcast(tg, store, chatId, session) {
-  await store.clearSession(chatId);
-  const userIds = await store.allUserIds();
+// ─── Menu Builder ─────────────────────────────────────────────────────────────
+export async function showMenuList(bot, DB, chatId, parentId='root') {
+  const nodes = await db.getNodes(DB);
+  const parent = nodes[parentId];
+  if (!parent) return;
 
-  await tg.sendMessage(chatId, `⏳ در حال ارسال به ${userIds.length} کاربر...`);
+  const children = (parent.children||[]).map(id=>nodes[id]).filter(Boolean);
+  const rows = children.map(n=>[
+    {text:`${n.enabled?'✅':'❌'} ${n.title} [${n.type}]`, callback_data:`adm:node:${n.id}`}
+  ]);
+  rows.push([{text:'➕ اضافه کردن دکمه', callback_data:`adm:node_add:${parentId}`}]);
+  if (parentId !== 'root') rows.push([{text:'🔙 بازگشت', callback_data:`adm:menu_list:${parent.parent_id||'root'}`}]);
+  else rows.push([{text:'🔙 بازگشت', callback_data:'adm:home'}]);
 
-  const replyMarkup = session.linkUrl
-    ? { inline_keyboard: [[{ text: session.linkLabel || "🔗 لینک", url: session.linkUrl }]] }
-    : undefined;
-
-  let sent = 0;
-  for (const uid of userIds) {
-    let res;
-    if (session.contentType === "text") {
-      res = await tg.sendMessage(uid, session.text, replyMarkup ? { reply_markup: replyMarkup } : {});
-    } else {
-      res = await sendFileByType(tg, uid, session.contentType, session.fileId, session.caption, replyMarkup);
-    }
-    if (res.ok) sent++;
-  }
-
-  await tg.sendMessage(chatId, `✅ اطلاعیه برای ${sent} از ${userIds.length} کاربر ارسال شد.`);
+  await bot.sendMessage(chatId,
+    `🧩 <b>مدیریت منو</b>\n📁 ${parent.title}\n\n${children.length} دکمه`,
+    {reply_markup:{inline_keyboard:rows}}
+  );
 }
 
-// ---------------- آمار ----------------
+export async function showNodeDetail(bot, DB, chatId, nodeId) {
+  const nodes = await db.getNodes(DB);
+  const node = nodes[nodeId];
+  if (!node) return;
 
-export async function showStats(tg, store, chatId) {
-  const userIds = await store.allUserIds();
-  await tg.sendMessage(
-    chatId,
-    `📊 <b>آمار ربات</b>\n\n👥 تعداد کاربران: ${userIds.length}`,
-    { reply_markup: backButton("admin:home") }
+  const rows = [
+    [{text:'✏️ ویرایش عنوان', callback_data:`adm:node_edit_title:${nodeId}`}],
+    [{text:'📝 ویرایش محتوا', callback_data:`adm:node_edit_content:${nodeId}`}],
+    [{text:node.enabled?'🔴 غیرفعال کن':'🟢 فعال کن', callback_data:`adm:node_toggle:${nodeId}`}],
+    [{text:'🗑 حذف دکمه', callback_data:`adm:node_del_confirm:${nodeId}`}],
+  ];
+  if (node.type==='submenu') rows.push([{text:'📂 مدیریت زیردکمه‌ها', callback_data:`adm:menu_list:${nodeId}`}]);
+  if (node.type==='file') rows.push([{text:'📎 مدیریت فایل‌ها', callback_data:`adm:node_files:${nodeId}`}]);
+  rows.push([{text:'🔙 بازگشت', callback_data:`adm:menu_list:${node.parent_id||'root'}`}]);
+
+  await bot.sendMessage(chatId,
+    `🔧 <b>${node.title}</b>\nنوع: ${node.type}\nوضعیت: ${node.enabled?'✅ فعال':'❌ غیرفعال'}`,
+    {reply_markup:{inline_keyboard:rows}}
   );
+}
 
-  if (userIds.length === 0) return;
+// ─── Gate Admin ───────────────────────────────────────────────────────────────
+export async function showGate(bot, DB, chatId) {
+  const channels = await db.getGateChannels(DB);
+  let text = '🔒 <b>گیت دسترسی</b>\n━━━━━━━━━━━━━━━━━━━━\n';
+  text += channels.length ? channels.map(c=>`\n• ${c.channel_title||c.channel_id}`).join('') : '\nهیچ کانالی تنظیم نشده.';
+  const rows = [
+    [{text:'➕ اضافه کردن کانال', callback_data:'adm:gate_add'}],
+    ...channels.map(c=>[{text:`🗑 ${c.channel_title||c.channel_id}`, callback_data:`adm:gate_del:${c.id}`}]),
+    [{text:'🔙 بازگشت', callback_data:'adm:home'}],
+  ];
+  await bot.sendMessage(chatId, text, {reply_markup:{inline_keyboard:rows}});
+}
 
-  const chunkSize = 100;
-  for (let i = 0; i < userIds.length; i += chunkSize) {
-    const chunk = userIds.slice(i, i + chunkSize).map((id) => `<code>${id}</code>`).join(", ");
-    await tg.sendMessage(chatId, `🆔 آیدی‌های کاربران (${i + 1}-${Math.min(i + chunkSize, userIds.length)}):\n${chunk}`);
+// ─── AI Admin ─────────────────────────────────────────────────────────────────
+export async function showAISettings(bot, DB, chatId) {
+  const ai = await db.getAISettings(DB);
+  await bot.sendMessage(chatId,
+    `🤖 <b>تنظیمات هوش مصنوعی</b>\n━━━━━━━━━━━━━━━━━━━━\n` +
+    `🔗 Base URL: <code>${ai.baseUrl||'تنظیم نشده'}</code>\n` +
+    `🔑 API Key: ${ai.apiKey?'✅ تنظیم شده':'❌ تنظیم نشده'}\n` +
+    `🤖 Model: <code>${ai.model||'gpt-3.5-turbo'}</code>`,
+    {reply_markup:{inline_keyboard:[
+      [{text:'🔗 تنظیم Base URL', callback_data:'adm:ai_url'}],
+      [{text:'🔑 تنظیم API Key', callback_data:'adm:ai_key'}],
+      [{text:'🤖 تنظیم Model', callback_data:'adm:ai_model'}],
+      [{text:'🔙 بازگشت', callback_data:'adm:home'}],
+    ]}}
+  );
+}
+
+// ─── Attract Admin ────────────────────────────────────────────────────────────
+export async function showAttract(bot, DB, chatId) {
+  const adActive = await db.getSetting(DB, 'ad_listener_active');
+  const joinActive = await db.getSetting(DB, 'join_request_active');
+  const adMsg = await db.getSetting(DB, 'ad_message');
+  const groups = await db.getAdGroups(DB);
+  const targetBot = await db.getSetting(DB, 'ad_target_bot')||'';
+  const buttonType = await db.getSetting(DB, 'ad_button_type')||'button';
+  const deleteAfter = await db.getSetting(DB, 'ad_delete_after')||'30';
+  const stats = await db.getAdStats(DB);
+
+  await bot.sendMessage(chatId,
+    `🎯 <b>جذب ممبر</b>\n━━━━━━━━━━━━━━━━━━━━\n` +
+    `📢 تبلیغ گروه: <b>${adActive==='1'?'✅ فعال':'❌ غیرفعال'}</b>\n` +
+    `🔗 Join Request: <b>${joinActive==='1'?'✅ فعال':'❌ غیرفعال'}</b>\n` +
+    `🤖 ربات مقصد: <b>${targetBot?'@'+targetBot:'(تنظیم نشده)'}</b>\n` +
+    `🔘 نوع: <b>${buttonType==='button'?'دکمه':'منشن @'}</b>\n` +
+    `🕐 حذف بعد: <b>${deleteAfter} ثانیه</b>\n` +
+    `📋 گروه‌ها: <b>${groups.length}</b>\n` +
+    `📊 تبلیغ: <b>${stats.adSent}</b> | Join: <b>${stats.joinApproved}</b>\n\n` +
+    `✉️ پیام:\n${adMsg?adMsg.slice(0,80)+'...':'⚠️ تنظیم نشده'}`,
+    {reply_markup:{inline_keyboard:[
+      [{text:adActive==='1'?'🔴 غیرفعال تبلیغ':'🟢 فعال تبلیغ', callback_data:'adm:attract_toggle_ad'}],
+      [{text:joinActive==='1'?'🔴 غیرفعال Join':'🟢 فعال Join', callback_data:'adm:attract_toggle_join'}],
+      [{text:'✏️ ویرایش پیام تبلیغ', callback_data:'adm:attract_edit_msg'}],
+      [{text:'🤖 ربات مقصد', callback_data:'adm:attract_target_bot'}],
+      [{text:'⚙️ تنظیمات نمایش', callback_data:'adm:attract_display'}],
+      [{text:'➕ اضافه گروه', callback_data:'adm:attract_add_group'}],
+      [{text:'📋 لیست گروه‌ها', callback_data:'adm:attract_groups'}],
+      [{text:'🔙 بازگشت', callback_data:'adm:home'}],
+    ]}}
+  );
+}
+
+export async function showAttractDisplay(bot, DB, chatId) {
+  const buttonType = await db.getSetting(DB, 'ad_button_type')||'button';
+  const deleteAfter = await db.getSetting(DB, 'ad_delete_after')||'30';
+  await bot.sendMessage(chatId,
+    `⚙️ <b>تنظیمات نمایش</b>\n\n🔘 نوع: <b>${buttonType==='button'?'دکمه اینلاین':'منشن @'}</b>\n🕐 حذف بعد: <b>${deleteAfter} ثانیه</b>`,
+    {reply_markup:{inline_keyboard:[
+      [{text:buttonType==='button'?'✅ دکمه':'🔘 دکمه', callback_data:'adm:attract_type_btn'},
+       {text:buttonType==='mention'?'✅ منشن @':'🔘 منشن @', callback_data:'adm:attract_type_mention'}],
+      [{text:'⏱ 5 ثانیه', callback_data:'adm:attract_del:5'},{text:'⏱ 10 ثانیه', callback_data:'adm:attract_del:10'}],
+      [{text:'⏱ 15 ثانیه', callback_data:'adm:attract_del:15'},{text:'⏱ 20 ثانیه', callback_data:'adm:attract_del:20'}],
+      [{text:'⏱ 30 ثانیه', callback_data:'adm:attract_del:30'},{text:'⏱ 1 دقیقه', callback_data:'adm:attract_del:60'}],
+      [{text:'🔙 بازگشت', callback_data:'adm:attract'}],
+    ]}}
+  );
+}
+
+export async function showAttractGroups(bot, DB, chatId) {
+  const groups = await db.getAdGroups(DB);
+  if (!groups.length) {
+    await bot.sendMessage(chatId, '📋 هیچ گروهی اضافه نشده.',
+      {reply_markup:{inline_keyboard:[[{text:'🔙 بازگشت',callback_data:'adm:attract'}]]}}
+    );
+    return;
   }
+  const rows = groups.map(g=>[{text:`🗑 ${g.group_title||g.group_id}`, callback_data:`adm:attract_del_group:${g.id}`}]);
+  rows.push([{text:'🔙 بازگشت', callback_data:'adm:attract'}]);
+  await bot.sendMessage(chatId, `📋 <b>گروه‌ها (${groups.length})</b>`,
+    {reply_markup:{inline_keyboard:rows}}
+  );
 }

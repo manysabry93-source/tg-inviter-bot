@@ -1,42 +1,11 @@
-name = "farahoosh-bot"
+name = "tg-inviter-bot"
 main = "src/index.js"
-compatibility_date = "2024-11-01"
+compatibility_date = "2024-01-01"
 
-# هر یک دقیقه اجرا می‌شود تا پیام‌های جدید روبیکا را با getUpdates چک کند
-# (چون وبهوک روبیکا پیام‌های معمولی را ارسال نمی‌کند)
-[triggers]
-crons = ["*/1 * * * *"]
-
-# ---------------------------------------------------------
-# این پروژه کاملاً روی پلن رایگان Cloudflare Workers اجرا می‌شود
-# نیازی به کارت اعتباری یا خرید هیچ سرویسی نیست.
-# ---------------------------------------------------------
+[[d1_databases]]
+binding = "DB"
+database_name = "tg-bot-db"
+database_id = "5066c698-57a7-4c50-a5a3-c8439074c004"
 
 [vars]
-# آیدی عددی ادمین اصلی (بعداً با /myid در تلگرام پیدا می‌کنید)
-ADMIN_IDS = "5424282958"
-# نام کاربری کانال ویدیوهای آموزشی (بدون @)
-VIDEO_CHANNEL = "fara_video"
-
-# ---------------------------------------------------------
-# بله (Bale) - همین ربات، مستقل، روی بله هم اجرا می‌شود
-# توکن با دستور زیر (مثل BOT_TOKEN) به‌صورت Secret اضافه شود:
-# npx wrangler secret put BALE_BOT_TOKEN
-# ---------------------------------------------------------
-BALE_ADMIN_IDS = "1322476068"
-BALE_VIDEO_CHANNEL = ""
-
-# ---------------------------------------------------------
-# روبیکا (Rubika) - همین ربات، مستقل، روی روبیکا هم اجرا می‌شود
-# توکن با دستور زیر (مثل BOT_TOKEN) به‌صورت Secret اضافه شود:
-# npx wrangler secret put RUBIKA_BOT_TOKEN
-# ---------------------------------------------------------
-RUBIKA_ADMIN_IDS = "b0DH4hN0yL705b8ab019d14f03f3d8ee"
-
-# Cloudflare KV namespace - محل ذخیره‌ی تمام داده‌های ربات (هر سه پلتفرم
-# از همین یک namespace استفاده می‌کنند، ولی با prefix جدا از هم ذخیره می‌شوند)
-# مقدار id بعد از اجرای دستور زیر پر می‌شود:
-# npx wrangler kv namespace create "BOT_DB"
-[[kv_namespaces]]
-binding = "BOT_DB"
-id = "490cfb5a858347ba8975bcdd05b60d37"
+BOT_USERNAME = "myjazbmemberbot"

@@ -1,16 +1,13 @@
 {
-  "name": "farahoosh-bot",
-  "version": "1.0.0",
-  "private": true,
-  "type": "module",
+  "name": "tg-inviter-bot",
+  "version": "2.0.0",
+  "main": "src/index.js",
   "scripts": {
-    "dev": "wrangler dev",
     "deploy": "wrangler deploy",
-    "kv:create": "wrangler kv namespace create BOT_DB",
-    "secret:token": "wrangler secret put BOT_TOKEN"
+    "db:init": "wrangler d1 execute tg-bot-db --remote --file=schema.sql"
   },
   "devDependencies": {
     "acorn": "^8.18.0",
-    "wrangler": "^3.90.0"
+    "wrangler": "^4.0.0"
   }
 }
