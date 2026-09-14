@@ -12,4 +12,4 @@ BOT_USERNAME = "myjazbmemberbot"
 
 [triggers]
 crons = ["*/5 * * * *"]
-0
+
