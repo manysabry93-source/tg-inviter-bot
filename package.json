@@ -1,7 +1,6 @@
 {
   "name": "tg-inviter-bot",
   "version": "2.0.0",
-  "main": "src/index.js",
   "scripts": {
     "deploy": "wrangler deploy",
     "db:init": "wrangler d1 execute tg-bot-db --remote --file=schema.sql"

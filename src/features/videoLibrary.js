@@ -1,62 +1,29 @@
-// ---------------------------------------------------------------------------
-// بخش ویدیو آموزشی: کاربر رشته -> مقطع -> درس را انتخاب می‌کند و ربات
-// ویدیوی مربوطه را مستقیماً از کانال @fara_video برای او فوروارد می‌کند.
-// ادمین از پنل، برای هر (رشته، مقطع) لیست دروس و آیدی پیام هر ویدیو در
-// کانال را تعریف می‌کند.
-// ---------------------------------------------------------------------------
-
-import { buildSimpleList, backButton } from "../keyboards.js";
-
-export async function showFields(tg, store, chatId) {
-  const tree = await store.get("video:tree");
-  const rows = tree.fields.map((f) => [{ text: f, callback_data: `vfield:${f}` }]);
-  rows.push([{ text: "🔙 بازگشت", callback_data: "open:root" }]);
-  await tg.sendMessage(chatId, "🎥 <b>ویدیو آموزشی</b>\n\nرشته‌ی خود را انتخاب کنید:", {
-    reply_markup: { inline_keyboard: rows },
-  });
+import * as db from '../db.js';
+export async function showFields(bot,DB,chatId){
+  const fields=await db.getVideoFields(DB);
+  if(!fields.length){await bot.sendMessage(chatId,'محتوایی اضافه نشده.',{reply_markup:{inline_keyboard:[[{text:'🔙 بازگشت',callback_data:'menu:root'}]]}});return;}
+  const rows=fields.map(f=>[{text:`📚 ${f.title}`,callback_data:`video:field:${f.id}`}]);
+  rows.push([{text:'🔙 بازگشت',callback_data:'menu:root'}]);
+  await bot.sendMessage(chatId,'🎥 <b>کتابخانه ویدیو</b>\n\nرشته را انتخاب کنید:',{reply_markup:{inline_keyboard:rows}});
 }
-
-export async function showGrades(tg, store, chatId, field) {
-  const tree = await store.get("video:tree");
-  const rows = tree.grades.map((g) => [{ text: g, callback_data: `vgrade:${field}:${g}` }]);
-  rows.push([{ text: "🔙 بازگشت", callback_data: "video:root" }]);
-  await tg.sendMessage(chatId, `📗 رشته: <b>${field}</b>\n\nمقطع تحصیلی را انتخاب کنید:`, {
-    reply_markup: { inline_keyboard: rows },
-  });
+export async function showGrades(bot,DB,chatId,fieldId){
+  const grades=await db.getVideoGrades(DB,fieldId);
+  const field=await db.getVideoField(DB,fieldId);
+  const rows=grades.map(g=>[{text:`📖 ${g.title}`,callback_data:`video:grade:${fieldId}:${g.id}`}]);
+  rows.push([{text:'🔙 بازگشت',callback_data:'video:fields'}]);
+  await bot.sendMessage(chatId,`📚 <b>${field?.title}</b>\n\nمقطع را انتخاب کنید:`,{reply_markup:{inline_keyboard:rows}});
 }
-
-export async function showLessons(tg, store, chatId, field, grade) {
-  const tree = await store.get("video:tree");
-  const lessons = tree.videos?.[field]?.[grade] || [];
-
-  if (!lessons.length) {
-    await tg.sendMessage(
-      chatId,
-      "⚠️ فعلاً ویدیویی برای این بخش ثبت نشده. به‌زودی اضافه می‌شود.",
-      { reply_markup: backButton(`vfield:${field}`) }
-    );
-    return;
-  }
-
-  const rows = lessons.map((lesson, idx) => [
-    { text: lesson.title, callback_data: `vlesson:${field}:${grade}:${idx}` },
-  ]);
-  rows.push([{ text: "🔙 بازگشت", callback_data: `vfield:${field}` }]);
-
-  await tg.sendMessage(chatId, `📘 ${field} - ${grade}\n\nدرس مورد نظر را انتخاب کنید:`, {
-    reply_markup: { inline_keyboard: rows },
-  });
+export async function showLessons(bot,DB,chatId,fieldId,gradeId){
+  const lessons=await db.getVideoLessons(DB,gradeId);
+  const grade=await db.getVideoGrade(DB,gradeId);
+  const rows=lessons.map(l=>[{text:`🎬 ${l.title}`,callback_data:`video:lesson:${fieldId}:${gradeId}:${l.id}`}]);
+  rows.push([{text:'🔙 بازگشت',callback_data:`video:field:${fieldId}`}]);
+  await bot.sendMessage(chatId,`📖 <b>${grade?.title}</b>\n\nدرس را انتخاب کنید:`,{reply_markup:{inline_keyboard:rows}});
 }
-
-export async function sendLesson(tg, store, chatId, field, grade, idx, videoChannel) {
-  const tree = await store.get("video:tree");
-  const lesson = tree.videos?.[field]?.[grade]?.[idx];
-
-  if (!lesson) {
-    await tg.sendMessage(chatId, "⚠️ این ویدیو یافت نشد.");
-    return;
-  }
-
-  await tg.sendMessage(chatId, `🎬 در حال ارسال: <b>${lesson.title}</b>`);
-  await tg.copyMessage(chatId, `@${videoChannel}`, lesson.messageId);
+export async function sendLesson(bot,DB,chatId,lessonId,videoChannel){
+  const lesson=await db.getVideoLesson(DB,lessonId);
+  if(!lesson||!lesson.message_id||!videoChannel){await bot.sendMessage(chatId,'ویدیو موجود نیست.');return;}
+  await bot.sendMessage(chatId,`🎬 <b>${lesson.title}</b>`);
+  try{await bot.copyMessage(chatId,`@${videoChannel}`,lesson.message_id);}
+  catch{await bot.sendMessage(chatId,'خطا در ارسال ویدیو.');}
 }

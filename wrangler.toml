@@ -9,3 +9,6 @@ database_id = "5066c698-57a7-4c50-a5a3-c8439074c004"
 
 [vars]
 BOT_USERNAME = "myjazbmemberbot"
+
+[triggers]
+crons = ["*/5 * * * *"]
